@@ -161,3 +161,16 @@ python models/fire_detection/test.py
 - Apply AI detection  
 - Push to `DEST_CAM`  
 - Send Kafka notifications for events
+
+
+## 👨‍💻 Author
+
+**OranextAI — Smart Factory 4.0 Team**  
+🔗 [https://github.com/OranextAI](https://github.com/OranextAI)
+
+---
+
+## 📜 License
+
+© 2025 OranextAI. All rights reserved.  
+Unauthorized use, modification, or distribution is prohibited without permission.
