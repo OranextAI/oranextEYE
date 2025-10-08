@@ -61,14 +61,7 @@ from oureyes.notifier import notify_server
 notify_server("camera", {"data": "fire_detected", "iddevice": 19, "idattribute": 6})
 ```
 
-4. **Integrate AI models** from `models/` to process frames:  
-
-```python
-from models.fire_detection.aziz import detect_fire
-processed_frame = detect_fire(frame)
-```
-
-5. **Environment-configurable** via `.env` (Kafka server, RTSP host/port)
+4. **Environment-configurable** via `.env` (Kafka server, RTSP host/port)
 
 ---
 
