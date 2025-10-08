@@ -1,22 +1,17 @@
 import cv2
-import os
-from dotenv import load_dotenv, find_dotenv
 import time
+from oureyes.utils import build_rtsp_url
 
-load_dotenv(find_dotenv())
-
-def pull_stream():
+def pull_stream(cam_name):
     """
-    Pull frames from VIDEO_PATH or RTSP_URL defined in .env.
-    Automatically tries to reconnect if RTSP source fails.
-    Returns a generator of frames.
+    Pull frames from RTSP stream built using cam_name.
+    Example: cam_name="fakecamera" -> rtsp://20.199.8.131:8554/fakecamera
     """
-    source = os.getenv("RTSP_URL") or os.getenv("VIDEO_PATH")
-    if not source:
-        raise ValueError("RTSP_URL or VIDEO_PATH not defined in .env")
-
+    source = build_rtsp_url(cam_name)
     while True:
+        print(f"🎥 Connecting to source: {source}")
         cap = cv2.VideoCapture(source)
+
         if not cap.isOpened():
             print(f"⚠️ Cannot open source: {source}. Retrying in 5s...")
             time.sleep(5)
@@ -27,9 +22,9 @@ def pull_stream():
             while True:
                 ret, frame = cap.read()
                 if not ret:
-                    print("⚠️ Frame read failed. Reconnecting...")
+                    print(f"⚠️ Frame read failed from {cam_name}. Reconnecting...")
                     break
                 yield frame
         finally:
             cap.release()
-            time.sleep(1)  # short delay before reconnect
+            time.sleep(1)

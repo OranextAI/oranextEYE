@@ -1,18 +1,14 @@
-import os
 import subprocess
-from dotenv import load_dotenv, find_dotenv
+from oureyes.utils import build_rtsp_url
 
-load_dotenv(find_dotenv())
 
-def push_stream(frames, width, height, fps):
+def push_stream(frames, width, height, fps, cam_name):
     """
-    Push frames to MediaMTX RTSP destination defined in .env.
+    Push frames to RTSP destination built using cam_name.
+    Example: cam_name="firecam" -> rtsp://20.199.8.131:8554/firecam
     """
-    dest_url = os.getenv("DEST_URL")
-    if not dest_url:
-        host = os.getenv("HOST", "127.0.0.1")
-        port = os.getenv("PORT", "8554")
-        dest_url = f"rtsp://{host}:{port}/pulledcam"
+    dest_url = build_rtsp_url(cam_name)
+    print(f"🚀 Streaming to: {dest_url}")
 
     ffmpeg_cmd = [
         "ffmpeg",
