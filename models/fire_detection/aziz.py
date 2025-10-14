@@ -36,7 +36,7 @@ def process_frame(frame):
 
 def main():
     # 🔧 Camera configuration
-    SRC_CAM = "fakecamera"
+    SRC_CAM = "fakecam"
     DEST_CAM = "pulledcam"
     FPS = 25
 

@@ -1,7 +1,52 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Environments
 .env
+venv/
+env/
+.venv/
+
+# Logs and databases
 *.log
 *.sqlite3
-venv/
+*.db
+
+# Distribution / packaging
 *.egg-info/
+dist/
+build/
+*.spec
+
+# Model files (don’t upload large models)
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.engine
+*.weights
+*.pb
+*.ckpt
+*.h5
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.swp
+
+# Media and temp files
+*.mp4
+*.avi
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.npy
+
+# OS files
+.DS_Store
+Thumbs.db
