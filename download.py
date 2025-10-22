@@ -114,7 +114,7 @@ if __name__ == "__main__":
     from oureyes.puller import pull_stream
 
     SRC_CAM = "fakefire"
-    DEST_CAM = "resultfakefire"
+    DEST_CAM = "resultfakefire2"
     FPS = 25
 
     frames = pull_stream(SRC_CAM)

@@ -3,10 +3,11 @@ from oureyes.puller import pull_stream
 from models.zone_analysis.zone_analysis import zone_analysis
 from models.fire_detection.fire_detection import fire_detection
 
-def run_zone_analysis(frames):
-    """Run zone analysis on provided frames."""
-    DEST_CAM_ZONE = "resultfakecam"
-    zone_analysis(frames, dest_cam=DEST_CAM_ZONE, fps=FPS)
+FPS = 20  # frames per second
+
+def run_zone_analysis(frames, dest_cam):
+    """Run zone analysis on provided frames to a specific output."""
+    zone_analysis(frames, dest_cam=dest_cam, fps=FPS)
 
 def run_fire_detection(frames):
     """Run fire detection on provided frames."""
@@ -17,18 +18,29 @@ if __name__ == "__main__":
     # ---------------- Config ----------------
     SRC_CAM_ZONE = "fakecam"
     SRC_CAM_FIRE = "fakefire"
-    FPS = 20
 
     # ---------------- Pull Streams ----------------
-    zone_frames = pull_stream(SRC_CAM_ZONE)
+    # Pull separate streams for each zone analysis thread
+    zone_frames1 = pull_stream(SRC_CAM_ZONE)
+    zone_frames2 = pull_stream(SRC_CAM_ZONE)
     fire_frames = pull_stream(SRC_CAM_FIRE)
 
     # ---------------- Threads ----------------
-    zone_thread = threading.Thread(
+    # Zone analysis thread 1
+    zone_thread1 = threading.Thread(
         target=run_zone_analysis,
-        args=(zone_frames,),
-        name="ZoneAnalysisThread"
+        args=(zone_frames1, "resultfakecam1"),
+        name="ZoneAnalysisThread1"
     )
+
+    # Zone analysis thread 2
+    zone_thread2 = threading.Thread(
+        target=run_zone_analysis,
+        args=(zone_frames2, "resultfakecam2"),
+        name="ZoneAnalysisThread2"
+    )
+
+    # Fire detection thread
     fire_thread = threading.Thread(
         target=run_fire_detection,
         args=(fire_frames,),
@@ -36,9 +48,11 @@ if __name__ == "__main__":
     )
 
     # ---------------- Run ----------------
-    zone_thread.start()
+    zone_thread1.start()
+    zone_thread2.start()
     fire_thread.start()
 
-    # Wait for both threads to complete (they usually run indefinitely)
-    zone_thread.join()
+    # Wait for threads to complete
+    zone_thread1.join()
+    zone_thread2.join()
     fire_thread.join()

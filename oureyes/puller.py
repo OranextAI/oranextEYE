@@ -1,30 +1,70 @@
+import asyncio
+import aiohttp
 import cv2
+import numpy as np
 import time
-from oureyes.utils import build_rtsp_url
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from oureyes.utils import build_webrtc_url
 
 def pull_stream(cam_name):
     """
-    Pull frames from RTSP stream built using cam_name.
-    Example: cam_name="fakecamera" -> rtsp://20.199.8.131:8554/fakecamera
+    Pull frames from WHEP stream built using cam_name.
+    Example: cam_name="fakecamera" -> http://<HOST>:<PORT>/<cam_name>/whep
     """
-    source = build_rtsp_url(cam_name)
-    while True:
-        print(f"🎥 Connecting to source: {source}")
-        cap = cv2.VideoCapture(source)
+    url = build_webrtc_url(cam_name)
 
-        if not cap.isOpened():
-            print(f"⚠️ Cannot open source: {source}. Retrying in 5s...")
-            time.sleep(5)
-            continue
+    async def webrtc_worker(queue):
+        async with aiohttp.ClientSession() as session:
+            pc = RTCPeerConnection()
+            pc.addTransceiver('video', direction='recvonly')
 
-        print(f"✅ Connected to source: {source}")
-        try:
+            @pc.on('track')
+            def on_track(track):
+                print(f"✅ Track received: {track.kind}")
+
+                async def recv_loop():
+                    while True:
+                        frame = await track.recv()
+                        img = frame.to_ndarray(format='bgr24')
+                        await queue.put(img)
+                asyncio.ensure_future(recv_loop())
+
+            # Offer & answer handshake
+            offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+
+            async with session.post(url, headers={'Content-Type': 'application/sdp'}, data=pc.localDescription.sdp) as resp:
+                answer_sdp = await resp.text()
+
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type='answer'))
+            print(f"✅ WHEP session established for {cam_name}")
+
+            # Keep connection alive
             while True:
-                ret, frame = cap.read()
-                if not ret:
-                    print(f"⚠️ Frame read failed from {cam_name}. Reconnecting...")
-                    break
-                yield frame
-        finally:
-            cap.release()
-            time.sleep(1)
+                await asyncio.sleep(1)
+
+    # Async runner
+    async def frame_generator():
+        queue = asyncio.Queue()
+        while True:
+            try:
+                # Start WHEP worker
+                task = asyncio.create_task(webrtc_worker(queue))
+                while True:
+                    frame = await queue.get()
+                    yield frame
+            except Exception as e:
+                print(f"⚠️ Connection lost: {e}. Reconnecting in 5s...")
+                await asyncio.sleep(5)
+
+    # Run the async generator in sync context
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    agen = frame_generator()
+    while True:
+        try:
+            frame = loop.run_until_complete(agen.__anext__())
+            yield frame
+        except Exception as e:
+            print(f"⚠️ Error pulling frame: {e}. Reconnecting...")
+            time.sleep(5)
