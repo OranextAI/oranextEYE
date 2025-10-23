@@ -22,8 +22,8 @@ def run_ppe_detection(frames):
 def run_surveillance_zones(frames):
     surveillance_zones(frames, dest_cam="resultfakesurveillance", fps=FPS)
 
-def run_time_count(frames):
-    time_count(frames, dest_cam="resultfaketimecount", fps=FPS)
+""" def run_time_count(frames):
+    time_count(frames, dest_cam="resultfaketimecount", fps=FPS) """
 
 def run_zone_detection(frames):
     zone_detection(frames, dest_cam="resultfakezonedetection", fps=FPS)
@@ -36,7 +36,6 @@ if __name__ == "__main__":
     SRC_CAM_FIRE = "fakefire"
     SRC_CAM_PPE = "fakecam"
     SRC_CAM_SURV = "fakecam"
-    SRC_CAM_TIME = "fakecam"
     SRC_CAM_ZONEDET = "fakecam"
 
     # ----------- Pull Streams -----------
@@ -44,7 +43,6 @@ if __name__ == "__main__":
     fire_frames = pull_stream(SRC_CAM_FIRE)
     ppe_frames = pull_stream(SRC_CAM_PPE)
     surv_frames = pull_stream(SRC_CAM_SURV)
-    time_frames = pull_stream(SRC_CAM_TIME)
     zonedet_frames = pull_stream(SRC_CAM_ZONEDET)
 
     # ----------- Threads -----------
@@ -53,7 +51,6 @@ if __name__ == "__main__":
         threading.Thread(target=run_fire_detection, args=(fire_frames,), name="FireDetectionThread"),
         threading.Thread(target=run_ppe_detection, args=(ppe_frames,), name="PPEDetectionThread"),
         threading.Thread(target=run_surveillance_zones, args=(surv_frames,), name="SurveillanceZonesThread"),
-        threading.Thread(target=run_time_count, args=(time_frames,), name="TimeCountThread"),
         threading.Thread(target=run_zone_detection, args=(zonedet_frames,), name="ZoneDetectionThread"),
     ]
 
