@@ -44,11 +44,11 @@ async def main_async():
     loop = asyncio.get_running_loop()
 
     # Await queues from async pull_stream
-    zone_queue = await pull_stream("fakecam")
-    fire_queue = await pull_stream("fakefire")
-    ppe_queue = await pull_stream("fakecam")
-    surv_queue = await pull_stream("fakecam")
-    zonedet_queue = await pull_stream("fakecam")
+    zone_queue = await pull_stream("cam1sub")
+    fire_queue = await pull_stream("cam1sub")
+    ppe_queue = await pull_stream("cam1sub")
+    surv_queue = await pull_stream("cam1sub")
+    zonedet_queue = await pull_stream("cam1sub")
 
     threads = [
         threading.Thread(target=run_zone_analysis, args=(zone_queue, loop), name="ZoneAnalysisThread"),
