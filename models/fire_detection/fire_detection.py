@@ -11,7 +11,7 @@ from oureyes.notifier import notify_server
 # Global variables
 _last_alert_time = 0
 ALERT_INTERVAL = 1  # Minimum time between alerts (in seconds)
-CONFIDENCE_THRESHOLD = 0.32  # Confidence threshold for fire/smoke
+CONFIDENCE_THRESHOLD = 0.5  # Confidence threshold for fire/smoke
 
 # Probability colors for each class (customize as needed)
 PROB_COLORS = {
@@ -113,8 +113,8 @@ def fire_detection(frames, dest_cam, fps):
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
 
-    SRC_CAM = "cam1sub"
-    DEST_CAM = "fire1"
+    SRC_CAM = "cam2sub"
+    DEST_CAM = "fire2"
     FPS = 25
 
     frames = pull_stream(SRC_CAM)
