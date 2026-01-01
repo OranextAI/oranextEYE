@@ -3,6 +3,7 @@ import aiohttp
 import numpy as np
 import os
 import cv2
+import time
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from oureyes.utils import build_webrtc_url
 
@@ -33,11 +34,33 @@ class StreamBroadcaster:
 
     async def start(self):
         """Establish and maintain a WebRTC stream connection."""
+        RECONNECT_DELAY = 2
+        FRAME_TIMEOUT = 10
+        MAX_QUEUE_SIZE = 30
+        
         while not self._stop:
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                    # Clean up old connection
+                    if self.pc:
+                        try:
+                            await self.pc.close()
+                        except:
+                            pass
+                        self.pc = None
+                    
+                    if self.recv_task and not self.recv_task.done():
+                        self.recv_task.cancel()
+                        try:
+                            await self.recv_task
+                        except asyncio.CancelledError:
+                            pass
+                    
                     self.pc = RTCPeerConnection()
-                    self.pc.addTransceiver('video', direction='recvonly')
+                    self.connected_event.clear()
+                    
+                    connection_state = {'failed': False}
+                    last_frame_time = None
 
                     # ----------------------------------------
                     # Handle incoming video track
@@ -47,17 +70,46 @@ class StreamBroadcaster:
                         print(f"✅ Track received from camera {self.cam_name}: {track.kind}")
 
                         async def recv_loop():
+                            nonlocal last_frame_time
                             while True:
                                 try:
-                                    frame = await track.recv()
+                                    frame = await asyncio.wait_for(track.recv(), timeout=FRAME_TIMEOUT)
                                     img = frame.to_ndarray(format='bgr24')
+                                    last_frame_time = time.time()
+                                    
+                                    # Distribute to all queues
+                                    queues_to_remove = []
                                     for queue in self.queues:
                                         try:
-                                            queue.put_nowait(np.copy(img))  # ✅ each consumer gets its own frame
+                                            queue.put_nowait(np.copy(img))
                                         except asyncio.QueueFull:
-                                            pass
-                                except Exception:
-                                    break  # exit loop if stream stops
+                                            # Queue full, drop oldest frame
+                                            try:
+                                                queue.get_nowait()
+                                                queue.put_nowait(np.copy(img))
+                                            except:
+                                                pass
+                                        except Exception:
+                                            # Queue may have been removed
+                                            queues_to_remove.append(queue)
+                                    
+                                    # Clean up dead queues
+                                    for q in queues_to_remove:
+                                        if q in self.queues:
+                                            self.queues.remove(q)
+                                            
+                                except asyncio.TimeoutError:
+                                    # Check if connection is still alive
+                                    if self.pc and self.pc.iceConnectionState in ('failed', 'disconnected', 'closed'):
+                                        break
+                                    # Check if no frames for too long
+                                    if last_frame_time and (time.time() - last_frame_time) > FRAME_TIMEOUT:
+                                        print(f"⚠️ No frames for {FRAME_TIMEOUT}s from {self.cam_name}")
+                                        break
+                                    continue
+                                except Exception as e:
+                                    print(f"⚠️ Error receiving frame from {self.cam_name}: {e}")
+                                    break
 
                         self.recv_task = asyncio.create_task(recv_loop())
 
@@ -67,9 +119,23 @@ class StreamBroadcaster:
                     @self.pc.on('iceconnectionstatechange')
                     def on_iceconnectionstatechange():
                         state = self.pc.iceConnectionState
+                        print(f"📡 ICE connection state for {self.cam_name}: {state}")
                         if state in ('failed', 'disconnected', 'closed'):
-                            print(f"⚠️ Connection lost for {self.cam_name}, will reconnect...")
-                            asyncio.create_task(self.pc.close())
+                            connection_state['failed'] = True
+                            self.connected_event.clear()
+
+                    @self.pc.on('connectionstatechange')
+                    def on_connectionstatechange():
+                        state = self.pc.connectionState
+                        print(f"🔌 Connection state for {self.cam_name}: {state}")
+                        if state == 'failed':
+                            connection_state['failed'] = True
+                            self.connected_event.clear()
+
+                    # ----------------------------------------
+                    # Setup transceiver
+                    # ----------------------------------------
+                    self.pc.addTransceiver('video', direction='recvonly')
 
                     # ----------------------------------------
                     # Create and send offer (WHEP)
@@ -77,12 +143,19 @@ class StreamBroadcaster:
                     offer = await self.pc.createOffer()
                     await self.pc.setLocalDescription(offer)
 
-                    async with session.post(
-                        self.url,
-                        headers={'Content-Type': 'application/sdp'},
-                        data=self.pc.localDescription.sdp
-                    ) as resp:
-                        answer_sdp = await resp.text()
+                    try:
+                        async with session.post(
+                            self.url,
+                            headers={'Content-Type': 'application/sdp'},
+                            data=self.pc.localDescription.sdp,
+                            timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            # Accept both 200 (OK) and 201 (Created) as success
+                            if resp.status not in (200, 201):
+                                raise Exception(f"WHEP server returned status {resp.status}")
+                            answer_sdp = await resp.text()
+                    except asyncio.TimeoutError:
+                        raise Exception(f"Connection timeout to {self.url}")
 
                     await self.pc.setRemoteDescription(
                         RTCSessionDescription(sdp=answer_sdp, type='answer')
@@ -90,34 +163,79 @@ class StreamBroadcaster:
 
                     print(f"✅ WHEP session established for camera {self.cam_name}")
                     self.connected_event.set()
+                    last_frame_time = time.time()
 
                     # ----------------------------------------
-                    # Wait while connected
+                    # Monitor connection health
                     # ----------------------------------------
-                    while self.pc.iceConnectionState not in ('failed', 'disconnected', 'closed'):
+                    while not self._stop:
                         await asyncio.sleep(1)
+                        
+                        # Check connection state
+                        if connection_state['failed']:
+                            print(f"⚠️ Connection failed detected for {self.cam_name}")
+                            break
+                        
+                        # Check if recv_task is still running
+                        if self.recv_task and self.recv_task.done():
+                            print(f"⚠️ Receive task stopped for {self.cam_name}")
+                            try:
+                                await self.recv_task  # Get exception if any
+                            except Exception as e:
+                                print(f"⚠️ Receive task error: {e}")
+                            break
+                        
+                        # Check for no frames timeout
+                        if last_frame_time and (time.time() - last_frame_time) > FRAME_TIMEOUT * 2:
+                            print(f"⚠️ No frames for {FRAME_TIMEOUT * 2}s, reconnecting {self.cam_name}")
+                            break
+                        
+                        # Check ICE state
+                        if self.pc.iceConnectionState in ('failed', 'disconnected', 'closed'):
+                            print(f"⚠️ ICE state indicates disconnect for {self.cam_name}")
+                            break
 
-                    await self.pc.close()
-                    self.pc = None
+                    # Cleanup
+                    if self.recv_task and not self.recv_task.done():
+                        self.recv_task.cancel()
+                        try:
+                            await self.recv_task
+                        except asyncio.CancelledError:
+                            pass
+
+                    if self.pc:
+                        try:
+                            await self.pc.close()
+                        except:
+                            pass
+                        self.pc = None
 
             except Exception as e:
                 print(f"❌ Connection error for camera {self.cam_name}: {e}")
+                import traceback
+                print(traceback.format_exc())
 
             # ----------------------------------------
             # Reconnect handling
             # ----------------------------------------
-            print(f"🔄 Reconnecting {self.cam_name} in 5 seconds...")
-            self.connected_event.clear()
-            await asyncio.sleep(5)
+            if not self._stop:
+                print(f"🔄 Reconnecting {self.cam_name} in {RECONNECT_DELAY} seconds...")
+                self.connected_event.clear()
+                await asyncio.sleep(RECONNECT_DELAY)
 
     # ======================================================
     # Public methods
     # ======================================================
-    def subscribe(self, max_queue_size=10):
+    def subscribe(self, max_queue_size=30):
         """Subscribe to the stream (each subscriber gets its own queue)."""
         queue = asyncio.Queue(maxsize=max_queue_size)
         self.queues.append(queue)
         return queue
+    
+    def unsubscribe(self, queue):
+        """Unsubscribe from the stream by removing the queue."""
+        if queue in self.queues:
+            self.queues.remove(queue)
 
     async def stop(self):
         """Stop streaming gracefully."""
@@ -131,14 +249,34 @@ class StreamBroadcaster:
 # ======================================================
 broadcasters = {}
 
-async def get_stream(cam_name):
-    """Return a frame queue for the requested camera stream."""
+async def get_stream(cam_name, max_wait_time=60):
+    """Return a frame queue for the requested camera stream.
+    
+    Args:
+        cam_name: Name of the camera stream
+        max_wait_time: Maximum seconds to wait for connection (default: 60)
+    
+    Returns:
+        asyncio.Queue: Queue that will receive frames from the stream
+    """
     if cam_name not in broadcasters:
         broadcaster = StreamBroadcaster(cam_name)
         broadcasters[cam_name] = broadcaster
         asyncio.create_task(broadcaster.start())
-        await broadcaster.connected_event.wait()
+        
+        # Wait for connection with timeout
+        try:
+            await asyncio.wait_for(broadcaster.connected_event.wait(), timeout=max_wait_time)
+        except asyncio.TimeoutError:
+            print(f"⚠️ Timeout waiting for connection to {cam_name}")
+            raise Exception(f"Failed to connect to {cam_name} within {max_wait_time} seconds")
     else:
         broadcaster = broadcasters[cam_name]
+        # Wait for connection if not already connected
+        if not broadcaster.connected_event.is_set():
+            try:
+                await asyncio.wait_for(broadcaster.connected_event.wait(), timeout=max_wait_time)
+            except asyncio.TimeoutError:
+                print(f"⚠️ Timeout waiting for reconnection to {cam_name}")
 
     return broadcaster.subscribe()

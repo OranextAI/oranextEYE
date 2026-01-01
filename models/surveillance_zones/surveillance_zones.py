@@ -155,8 +155,8 @@ def surveillance_zones(frames, dest_cam, fps):
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    SRC_CAM = "fakecam"
-    DEST_CAM = "zones"
+    SRC_CAM = "cam2sub"
+    DEST_CAM = "fire2"
     FPS = 25
     frames = pull_stream(SRC_CAM)
     surveillance_zones(frames, dest_cam=DEST_CAM, fps=FPS)

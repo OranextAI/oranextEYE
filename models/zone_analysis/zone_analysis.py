@@ -163,8 +163,8 @@ def zone_analysis(frames, dest_cam, fps):
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    SRC_CAM = "fakecam"
-    DEST_CAM = "processedcam"
+    SRC_CAM = "cam2sub"
+    DEST_CAM = "fire2"
     FPS = 25
 
     # Pull frames from the source camera

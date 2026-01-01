@@ -11,7 +11,7 @@ from oureyes.notifier import notify_server
 # Global variables
 _last_alert_time = 0
 ALERT_INTERVAL = 1  # Minimum time between alerts (in seconds)
-CONFIDENCE_THRESHOLD = 0.5  # Confidence threshold for fire/smoke
+CONFIDENCE_THRESHOLD = 0.65  # Confidence threshold for fire/smoke
 
 # Probability colors for each class (customize as needed)
 PROB_COLORS = {
