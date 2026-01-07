@@ -19,6 +19,9 @@ try:
 except AttributeError:
     pass
 
+# Configuration constants
+MAX_QUEUE_SIZE = 30  # Buffer size for frames
+
 # ======================================================
 # Stream Broadcaster
 # ======================================================
@@ -36,7 +39,6 @@ class StreamBroadcaster:
         """Establish and maintain a WebRTC stream connection."""
         RECONNECT_DELAY = 2
         FRAME_TIMEOUT = 10
-        MAX_QUEUE_SIZE = 30
         
         while not self._stop:
             try:
@@ -77,16 +79,20 @@ class StreamBroadcaster:
                                     img = frame.to_ndarray(format='bgr24')
                                     last_frame_time = time.time()
                                     
-                                    # Distribute to all queues
+                                    # Distribute to all queues - always copy to avoid modification conflicts
                                     queues_to_remove = []
+                                    
                                     for queue in self.queues:
                                         try:
-                                            queue.put_nowait(np.copy(img))
+                                            # Always copy frame for each queue to ensure independence
+                                            frame_to_put = np.copy(img)
+                                            queue.put_nowait(frame_to_put)
                                         except asyncio.QueueFull:
-                                            # Queue full, drop oldest frame
+                                            # Queue full, drop oldest frame and add new one
                                             try:
                                                 queue.get_nowait()
-                                                queue.put_nowait(np.copy(img))
+                                                frame_to_put = np.copy(img)
+                                                queue.put_nowait(frame_to_put)
                                             except:
                                                 pass
                                         except Exception:
@@ -226,8 +232,10 @@ class StreamBroadcaster:
     # ======================================================
     # Public methods
     # ======================================================
-    def subscribe(self, max_queue_size=30):
+    def subscribe(self, max_queue_size=None):
         """Subscribe to the stream (each subscriber gets its own queue)."""
+        if max_queue_size is None:
+            max_queue_size = MAX_QUEUE_SIZE
         queue = asyncio.Queue(maxsize=max_queue_size)
         self.queues.append(queue)
         return queue

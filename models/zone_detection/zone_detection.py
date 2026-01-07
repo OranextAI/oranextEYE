@@ -52,11 +52,22 @@ def zone_detection(frames, dest_cam, fps):
 
     # Load YOLO model
     try:
-        model = YOLO(MODEL_PATH)
-        print(f"Model '{MODEL_PATH}' loaded successfully.")
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Load model and move to device (YOLO supports .to() directly)
+        model = YOLO(MODEL_PATH).to(device)
+        print(f"Model '{MODEL_PATH}' loaded successfully on {device}.")
     except Exception as e:
         print(f"Error loading YOLO model: {e}")
-        return
+        import traceback
+        traceback.print_exc()
+        # Try loading without device specification as fallback
+        try:
+            model = YOLO(MODEL_PATH)
+            print(f"Model '{MODEL_PATH}' loaded successfully (fallback, device auto-detected).")
+        except Exception as e2:
+            print(f"Fallback loading also failed: {e2}")
+            return
 
     # Initialize annotator
     colors = ColorPalette(colors=[Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)])

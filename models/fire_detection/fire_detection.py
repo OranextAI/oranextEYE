@@ -26,14 +26,43 @@ def fire_detection(frames, dest_cam, fps):
 
     model_name = "prithivMLmods/Fire-Detection-Siglip2"
     try:
-        model = SiglipForImageClassification.from_pretrained(model_name)
+        # Load model with explicit settings to avoid meta tensor issues
+        # Disable low_cpu_mem_usage to ensure actual weights are loaded
+        model = SiglipForImageClassification.from_pretrained(
+            model_name,
+            low_cpu_mem_usage=False,  # Disable to avoid meta tensors
+            torch_dtype=torch.float32  # Explicit dtype
+        )
         processor = AutoImageProcessor.from_pretrained(model_name)
-        model.to(device)
+        
+        # Move model to device after loading (model should have actual weights now)
+        model = model.to(device)
+        model.eval()  # Set to evaluation mode
         print(f"✅ SigLIP model loaded from: {model_name} on {device}")
         print(f"📦 Model classes: {model.config.id2label}")
     except Exception as e:
         print(f"❌ Error loading SigLIP model: {e}")
-        return
+        import traceback
+        traceback.print_exc()
+        # Try alternative loading method as fallback
+        try:
+            print("🔄 Trying alternative loading method...")
+            # Load without any special parameters
+            model = SiglipForImageClassification.from_pretrained(model_name)
+            processor = AutoImageProcessor.from_pretrained(model_name)
+            # Try moving to device with explicit handling
+            if device.type == "cuda":
+                model = model.cuda()
+            else:
+                model = model.cpu()
+            model.eval()
+            print(f"✅ SigLIP model loaded (fallback method) from: {model_name} on {device}")
+            print(f"📦 Model classes: {model.config.id2label}")
+        except Exception as e2:
+            print(f"❌ Fallback loading also failed: {e2}")
+            import traceback
+            traceback.print_exc()
+            return
 
     BASE_FONT_SCALE = 1.2
     BASE_TEXT_THICKNESS = 2

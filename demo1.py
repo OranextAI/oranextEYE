@@ -15,7 +15,7 @@ INPUT_CAMS = ["cam1sub", "cam2sub"]  # Input streams for all models
 # Model enable/disable configuration
 MODEL_CONFIG = {
     "fire_detection": {
-        "enabled": True,
+        "enabled": False,
         "function": fire_detection
     },
     "ppe_detection": {
@@ -35,7 +35,7 @@ MODEL_CONFIG = {
         "function": zone_analysis
     },
     "zone_detection": {
-        "enabled": True,
+        "enabled": False,
         "function": zone_detection
     }
 }
@@ -55,7 +55,7 @@ def sync_frame_generator(queue, loop):
         try:
             # Get frame from queue (this will block until a frame is available)
             future = asyncio.run_coroutine_threadsafe(queue.get(), loop)
-            # Use a long timeout to prevent hanging forever, but allow time for frames
+            # Use a reasonable timeout to prevent hanging
             frame = future.result(timeout=30.0)
             consecutive_errors = 0  # Reset error counter on success
             yield frame

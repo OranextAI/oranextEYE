@@ -9,7 +9,7 @@ from oureyes.utils import build_rtsp_url
 # Configuration constants
 RECONNECT_DELAY = 2  # seconds between reconnection attempts
 PROCESS_CHECK_INTERVAL = 1  # seconds between process health checks
-FRAME_BUFFER_SIZE = 30  # frames to buffer during reconnection
+FRAME_BUFFER_SIZE = 30  # Buffer size for frames
 STDOUT_BUFFER_SIZE = 1000  # lines of stdout to keep for debugging
 
 def push_stream(frames, width, height, fps, cam_name):
@@ -39,7 +39,7 @@ def push_stream(frames, width, height, fps, cam_name):
         cmd = [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel", "error",  # Show errors for debugging
+            "-loglevel", "error",
             "-y",
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
@@ -47,12 +47,12 @@ def push_stream(frames, width, height, fps, cam_name):
             "-r", str(fps),
             "-i", "-",
             "-vf", "format=bgr0",
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-tune", "ll",
+            "-c:v", "libx264",  # Use software encoding (more reliable)
+            "-preset", "medium",
+            "-tune", "zerolatency",
             "-b:v", "5M",
             "-g", "30",
-            "-reconnect", "1",  # Enable automatic reconnection
+            "-reconnect", "1",
             "-reconnect_at_eof", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "2",
@@ -73,8 +73,9 @@ def push_stream(frames, width, height, fps, cam_name):
                         last_error_log.append(error_msg)
                         if len(last_error_log) > 10:
                             last_error_log.pop(0)
-                        # Only print significant errors (not warnings)
-                        if any(keyword in error_msg.lower() for keyword in ['error', 'failed', 'connection refused', 'network']):
+                        # Only print significant errors
+                        error_lower = error_msg.lower()
+                        if any(keyword in error_lower for keyword in ['error', 'failed', 'connection refused', 'network']):
                             print(f"⚠️ FFmpeg error for {cam_name}: {error_msg}")
         except Exception:
             pass
@@ -104,7 +105,7 @@ def push_stream(frames, width, height, fps, cam_name):
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    bufsize=0  # Unbuffered for low latency
+                    bufsize=0
                 )
                 
                 # Start stderr reader thread
@@ -132,14 +133,14 @@ def push_stream(frames, width, height, fps, cam_name):
                     print(f"⚠️ Frame size mismatch for {cam_name}: expected {(height, width)}, got {frame.shape[:2]}")
                     frame = frame[:height, :width] if frame.shape[0] >= height and frame.shape[1] >= width else frame
                 
-                # Try to put frame in queue (drop if full to prevent memory buildup)
+                # Put frame in queue (always copy to avoid modification issues)
                 try:
-                    frame_queue.put(frame.copy(), timeout=0.1)
+                    frame_queue.put(frame.copy(), block=False)
                 except queue.Full:
                     # Remove oldest frame and add new one
                     try:
                         frame_queue.get_nowait()
-                        frame_queue.put(frame.copy(), timeout=0.1)
+                        frame_queue.put(frame.copy(), block=False)
                     except:
                         pass
                         
@@ -161,7 +162,8 @@ def push_stream(frames, width, height, fps, cam_name):
                 if process is None or process.poll() is not None:
                     # Process died, restart it
                     if process is not None:
-                        print(f"⚠️ FFmpeg process died for {cam_name} (exit code: {process.poll()})")
+                        exit_code = process.poll()
+                        print(f"⚠️ FFmpeg process died for {cam_name} (exit code: {exit_code})")
                         if last_error_log:
                             print(f"   Last errors: {'; '.join(last_error_log[-3:])}")
                     
