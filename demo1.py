@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from oureyes.puller_bis import pull_stream
+from oureyes.debug_timing import mark_stage
 from models.fire_detection.fire_detection import fire_detection
 from models.ppe_detection.ppe_detection import ppe_detection
 from models.surveillance_zones.surveillance_zones import surveillance_zones
@@ -15,7 +16,7 @@ INPUT_CAMS = ["cam1sub", "cam2sub"]  # Input streams for all models
 # Model enable/disable configuration
 MODEL_CONFIG = {
     "fire_detection": {
-        "enabled": False,
+        "enabled": True,
         "function": fire_detection
     },
     "ppe_detection": {
@@ -31,7 +32,7 @@ MODEL_CONFIG = {
         "function": time_count
     },
     "zone_analysis": {
-        "enabled": True,
+        "enabled": False,
         "function": zone_analysis
     },
     "zone_detection": {
@@ -41,10 +42,13 @@ MODEL_CONFIG = {
 }
 
 
-def sync_frame_generator(queue, loop):
+def sync_frame_generator(queue, loop, model_name, input_cam):
     """
     Converts an asyncio.Queue to a synchronous blocking generator.
     Keeps running even on errors, waiting for frames indefinitely.
+
+    Also emits latency debug information (if enabled) for when a
+    frame enters the model processing stage.
     """
     import time
     consecutive_errors = 0
@@ -58,6 +62,15 @@ def sync_frame_generator(queue, loop):
             # Use a reasonable timeout to prevent hanging
             frame = future.result(timeout=30.0)
             consecutive_errors = 0  # Reset error counter on success
+
+            # Mark that this frame has entered the model stage
+            mark_stage(
+                stage="model_input",
+                stream_name=f"{model_name}[{input_cam}]",
+                frame=frame,
+                pop=False,
+            )
+
             yield frame
         except Exception as e:
             consecutive_errors += 1
@@ -101,7 +114,7 @@ def run_model(queue, loop, model_func, dest_cam, model_name, input_cam):
         try:
             print(f"🚀 Starting {model_name} [{input_cam}] -> {dest_cam}")
             model_func(
-                sync_frame_generator(queue, loop),
+                sync_frame_generator(queue, loop, model_name, input_cam),
                 dest_cam=dest_cam,
                 fps=FPS
             )
@@ -130,14 +143,19 @@ async def main_async():
     """
     loop = asyncio.get_running_loop()
 
-    # Pull input streams from both cameras
-    input_queues = {}
+    # For each enabled model and camera, subscribe separately so every
+    # model receives the full frame stream. This avoids multiple
+    # consumers competing for a single queue.
+    model_queues = {}
     print(f"📡 Pulling streams from cameras: {', '.join(INPUT_CAMS)}\n")
-    
-    for cam_name in INPUT_CAMS:
-        print(f"📡 Connecting to {cam_name}...")
-        input_queues[cam_name] = await pull_stream(cam_name)
-        print(f"✅ Connected to {cam_name}")
+
+    for input_cam in INPUT_CAMS:
+        for model_name, config in MODEL_CONFIG.items():
+            if config["enabled"]:
+                print(f"📡 Connecting to {input_cam} for model {model_name}...")
+                q = await pull_stream(input_cam)
+                model_queues[(input_cam, model_name)] = q
+                print(f"✅ Connected to {input_cam} for model {model_name}")
 
     # Create threads for each enabled model and each camera
     threads = []
@@ -152,11 +170,15 @@ async def main_async():
             if config["enabled"]:
                 # Generate output camera name: model_name_camXsub
                 dest_cam = f"{model_name}_{input_cam}"
-                
+
+                # Each model has its own queue subscription so it gets
+                # all frames for this camera.
+                q = model_queues[(input_cam, model_name)]
+
                 thread = threading.Thread(
                     target=run_model,
                     args=(
-                        input_queues[input_cam],
+                        q,
                         loop,
                         config["function"],
                         dest_cam,

@@ -6,6 +6,7 @@ import cv2
 import time
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from oureyes.utils import build_webrtc_url
+from oureyes.debug_timing import register_capture
 
 # ======================================================
 # ✅ Silence OpenCV + FFmpeg logs across all versions
@@ -73,6 +74,9 @@ class StreamBroadcaster:
 
                         async def recv_loop():
                             nonlocal last_frame_time
+                            # Diagnostics: count how many frames we drop because
+                            # subscriber queues are full.
+                            dropped_frames = 0
                             while True:
                                 try:
                                     frame = await asyncio.wait_for(track.recv(), timeout=FRAME_TIMEOUT)
@@ -86,20 +90,25 @@ class StreamBroadcaster:
                                         try:
                                             # Always copy frame for each queue to ensure independence
                                             frame_to_put = np.copy(img)
+                                            # Register capture time for latency debugging
+                                            register_capture(self.cam_name, frame_to_put)
                                             queue.put_nowait(frame_to_put)
                                         except asyncio.QueueFull:
                                             # Queue full, drop oldest frame and add new one
+                                            dropped_frames += 1
+                                            if dropped_frames in (1, 100, 1000) or dropped_frames % 2000 == 0:
+                                                print(f"⚠️ [{self.cam_name}] Broadcaster dropped {dropped_frames} frame(s) due to slow subscribers")
                                             try:
                                                 queue.get_nowait()
                                                 frame_to_put = np.copy(img)
+                                                # Register capture time again for the replacement frame
+                                                register_capture(self.cam_name, frame_to_put)
                                                 queue.put_nowait(frame_to_put)
                                             except:
                                                 pass
                                         except Exception:
                                             # Queue may have been removed
                                             queues_to_remove.append(queue)
-                                    
-                                    # Clean up dead queues
                                     for q in queues_to_remove:
                                         if q in self.queues:
                                             self.queues.remove(q)

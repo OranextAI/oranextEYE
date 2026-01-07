@@ -43,9 +43,12 @@ def ppe_detection(frames, dest_cam, fps):
     print(f"Detected frame resolution: {VIDEO_RESOLUTION}")
 
     # Load YOLO model
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Force CPU to avoid meta-tensor device transfer issues in some
+    # torch/ultralytics combinations. This is more stable, at the
+    # cost of running detections on CPU.
+    device = "cpu"
     try:
-        model = YOLO(MODEL_PATH).to(device)
+        model = YOLO(MODEL_PATH)  # let Ultralytics handle device internally (CPU)
         print(f"[INFO] Model '{MODEL_PATH}' loaded successfully on {device}.")
     except Exception as e:
         print(f"[ERROR] Failed to load model: {e}")

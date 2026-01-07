@@ -5,6 +5,7 @@ import threading
 import queue
 import traceback
 from oureyes.utils import build_rtsp_url
+from oureyes.debug_timing import mark_stage
 
 # Configuration constants
 RECONNECT_DELAY = 2  # seconds between reconnection attempts
@@ -35,31 +36,34 @@ def push_stream(frames, width, height, fps, cam_name):
     last_error_log = []
     
     def build_ffmpeg_cmd():
-        """Build ffmpeg command with appropriate settings."""
+        """Build ffmpeg command with appropriate settings.
+
+        Notes for performance:
+        - Keep input as raw BGR from OpenCV
+        - Let FFmpeg convert to yuv420p for libx264
+        - Use a veryfast preset to reduce CPU load and latency
+        """
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "error",
             "-y",
             "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
+            "-pix_fmt", "bgr24",              # input pixel format from OpenCV
             "-s", f"{width}x{height}",
             "-r", str(fps),
             "-i", "-",
-            "-vf", "format=bgr0",
-            "-c:v", "libx264",  # Use software encoding (more reliable)
-            "-preset", "medium",
+            # encode with software H.264, tuned for low latency and lower CPU
+            "-c:v", "libx264",
+            "-preset", "veryfast",            # faster than "medium" to reduce CPU usage
             "-tune", "zerolatency",
-            "-b:v", "5M",
-            "-g", "30",
-            "-reconnect", "1",
-            "-reconnect_at_eof", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "2",
+            "-pix_fmt", "yuv420p",            # output format for broad compatibility
+            "-b:v", "3M",                      # slightly lower bitrate to reduce encoder work
+            "-g", str(fps),                    # GOP length ~1 second
             "-f", "rtsp",
             "-rtsp_transport", "tcp",
             "-muxdelay", "0",
-            dest_url
+            dest_url,
         ]
         return cmd
     
@@ -123,6 +127,7 @@ def push_stream(frames, width, height, fps, cam_name):
     
     def frame_producer():
         """Read frames from generator and put them in queue."""
+        dropped_frames = 0
         try:
             for frame in frames:
                 if stop_flag.is_set():
@@ -135,9 +140,14 @@ def push_stream(frames, width, height, fps, cam_name):
                 
                 # Put frame in queue (always copy to avoid modification issues)
                 try:
+                    # Mark that the frame is entering the pusher/encoder stage
+                    mark_stage("pusher_input", cam_name, frame, pop=False)
                     frame_queue.put(frame.copy(), block=False)
                 except queue.Full:
                     # Remove oldest frame and add new one
+                    dropped_frames += 1
+                    if dropped_frames in (1, 100, 1000) or dropped_frames % 2000 == 0:
+                        print(f"⚠️ [{cam_name}] Pusher dropped {dropped_frames} frame(s) due to full buffer")
                     try:
                         frame_queue.get_nowait()
                         frame_queue.put(frame.copy(), block=False)
@@ -199,6 +209,8 @@ def push_stream(frames, width, height, fps, cam_name):
                 # Write frame to process
                 try:
                     if current_process.stdin and current_process.poll() is None:
+                        # Final stage: consume latency entry for this frame
+                        mark_stage("encoder_write", cam_name, frame, pop=True)
                         current_process.stdin.write(frame.tobytes())
                         current_process.stdin.flush()
                         consecutive_errors = 0  # Reset error counter on success
