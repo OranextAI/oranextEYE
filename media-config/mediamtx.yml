@@ -765,34 +765,51 @@ pathDefaults:
 # for example "~^prefix" will match all paths that start with "prefix"
 
 paths:
-  cam:
-    source: rtsp://admin:smartICPS2025@@165.51.222.177/Streaming/Channels/101
-
-  camsub:
-    source: rtsp://admin:smartICPS2025@@165.51.222.177/Streaming/Channels/102
-
-  fakecam:
-    source: publisher
-    overridePublisher: yes
-    runOnInit: >
-      ffmpeg -re -stream_loop -1 -i /videos/nefzi.mp4 -an
-      -vf "scale=640:360,format=yuv420p"
-      -c:v libx264 -preset veryfast -tune zerolatency
-      -profile:v baseline -g 30 -pix_fmt yuv420p
-      -f rtsp rtsp://127.0.0.1:8554/fakecam
+  cam1:
+    source: rtsp://admin:smartICPS2025@@192.168.1.101:554/Streaming/Channels/101
+    sourceProtocol: tcp
+    sourceOnDemand: no
     runOnInitRestart: no
+    record: yes
+    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
 
-  fakefire:
-    source: publisher
-    overridePublisher: yes
-    runOnInit: >
-      ffmpeg -re -stream_loop -1 -i /videos/encoded_free_video.mp4 -an
-      -vf "scale=640:320,format=yuv420p"
-      -c:v libx264 -preset veryfast -tune zerolatency
-      -profile:v baseline -g 30 -pix_fmt yuv420p
-      -f rtsp rtsp://127.0.0.1:8554/fakefire
+  cam1sub:
+    source: rtsp://admin:smartICPS2025@@192.168.1.101:554/Streaming/Channels/102
+    sourceProtocol: tcp
+    sourceOnDemand: no
     runOnInitRestart: no
+    record: yes
+    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+
+  cam2:
+    source: rtsp://192.168.1.100:554/live/ch0
+    sourceProtocol: tcp
+    sourceOnDemand: no
+    runOnInitRestart: no
+    record: yes
+    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+
+  cam2sub:
+    source: rtsp://192.168.1.100:554/live/ch1
+    sourceProtocol: tcp
+    sourceOnDemand: no
+    runOnInitRestart: no
+    record: yes
+    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
 
   all_others:
     source: publisher
     overridePublisher: yes
+    record: yes
+    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+
+#  fakecam:
+#    source: publisher
+#    overridePublisher: yes
+#    runOnInit: >
+#      ffmpeg -re -stream_loop -1 -i /videos/nefzi.mp4 -an
+#      -vf "scale=640:360,format=yuv420p"
+#      -c:v libx264 -preset veryfast -tune zerolatency
+#      -profile:v baseline -g 30 -pix_fmt yuv420p
+#      -f rtsp rtsp://127.0.0.1:8554/fakecam
+#    runOnInitRestart: no
