@@ -1,139 +1,99 @@
-# ~/oranextEYE/models/safety/ppe_detection.py
+"""
+ppe_detection.py — Optimised version.
+
+Detects PPE compliance (Gloves, HairNet, Labcoat, Person) using YOLO.
+Emits bounding-box detections to Angular overlay via Socket.IO.
+Model loaded once via model_registry, shared across all threads.
+"""
+
 import cv2
 import os
-import cvzone
-import torch
-import numpy as np
-from ultralytics import YOLO
-from oureyes.pusher import push_stream
 
-def ppe_detection(frames, dest_cam, fps):
+from oureyes.emitter import emit_detections
+from oureyes.model_registry import get_yolo
+
+# ── Config ────────────────────────────────────────────────────────────────
+CLASS_NAMES        = ['Gloves', 'HairNet', 'Labcoat', 'Person']
+CONFIDENCE_THRESHOLD = 0.3
+FRAME_SKIP         = 2   # run inference every 3rd frame on GPU
+
+
+def ppe_detection(frames, dest_cam: str, fps: int):
     """
-    Process frames from a stream, detect PPE, and push to RTSP.
+    Detect PPE and emit bounding-box detections to Angular.
 
     Args:
-        frames: Generator yielding frames (NumPy arrays) from pull_stream.
-        dest_cam (str): Destination RTSP camera name (e.g., 'safety').
-        fps (int): Frames per second for the output stream.
+        frames:   Generator yielding BGR numpy frames.
+        dest_cam: Socket.IO streamId (e.g. "ppe_detection_cam2sub").
+        fps:      Unused — kept for API compatibility.
     """
-    # Configuration
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "best300.pt")
-    CONFIDENCE_THRESHOLD = 0.3
-    CLASS_NAMES = ['Gloves', 'HairNet', 'Labcoat', 'Person']
-    CLASS_COLORS = {
-        'Gloves': (255, 200, 0),
-        'HairNet': (0, 200, 255),
-        'Labcoat': (255, 0, 150),
-        'Person': (0, 255, 0)
-    }
-    TRANSPARENCY = 0.6
-    FONT_SCALE = 1.2
-    THICKNESS = 2
-    OFFSET = 8
 
-    # Get frame resolution from the first frame
     frame_iterator = iter(frames)
     try:
         first_frame = next(frame_iterator)
     except StopIteration:
-        print("Error: No frames available from input stream")
+        print("[ppe_detection] No frames available")
         return
 
-    VIDEO_RESOLUTION = (first_frame.shape[1], first_frame.shape[0])  # (width, height)
-    print(f"Detected frame resolution: {VIDEO_RESOLUTION}")
+    W, H = first_frame.shape[1], first_frame.shape[0]
+    print(f"[ppe_detection] {dest_cam} — {W}x{H}")
 
-    # Load YOLO model
-    # Force CPU to avoid meta-tensor device transfer issues in some
-    # torch/ultralytics combinations. This is more stable, at the
-    # cost of running detections on CPU.
-    device = "cpu"
-    try:
-        model = YOLO(MODEL_PATH)  # let Ultralytics handle device internally (CPU)
-        print(f"[INFO] Model '{MODEL_PATH}' loaded successfully on {device}.")
-    except Exception as e:
-        print(f"[ERROR] Failed to load model: {e}")
-        return
+    model = get_yolo(MODEL_PATH)
 
-    def draw_ppe_overlay(img, ppe_status, position, width, height):
-        """Draw PPE status overlay on the frame."""
-        overlay = img.copy()
-        x, y = position
-        cv2.rectangle(overlay, (x, y), (x + width, y + height), (50, 50, 50), -1)
-        img = cv2.addWeighted(overlay, TRANSPARENCY, img, 1 - TRANSPARENCY, 0)
-        offset_y = y + 30
-        for cls in CLASS_NAMES:
-            status = ppe_status[cls]
-            color = (0, 255, 0) if "ON" in status else (0, 0, 255)
-            cvzone.putTextRect(img, f"{cls}: {status}", (x + 10, offset_y),
-                               scale=FONT_SCALE, thickness=THICKNESS, colorB=(50, 50, 50),
-                               colorT=(255, 255, 255), colorR=color, offset=OFFSET)
-            offset_y += 30
-        return img
+    last_detections: list = []
 
-    def process_frame(frame):
-        """Process a single frame and return the annotated frame."""
-        if (frame.shape[1], frame.shape[0]) != VIDEO_RESOLUTION:
-            frame = cv2.resize(frame, VIDEO_RESOLUTION)
-
-        # Convert to RGB for YOLO
+    def run_inference(frame) -> list:
+        """Run YOLO and return normalised detection list."""
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = model(
+            img_rgb,
+            conf=CONFIDENCE_THRESHOLD,
+            classes=list(range(len(CLASS_NAMES))),
+            verbose=False,
+        )
 
-        # Run detection with verbose=False to suppress YOLO output
-        results = model(img_rgb, stream=True, conf=CONFIDENCE_THRESHOLD, classes=list(range(len(CLASS_NAMES))), verbose=False)
+        out = []
+        # results is a list when stream=False
+        r = results[0] if isinstance(results, list) else results
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf   = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            if conf >= CONFIDENCE_THRESHOLD and cls_id < len(CLASS_NAMES):
+                out.append({
+                    "label": CLASS_NAMES[cls_id],
+                    "conf":  round(conf, 3),
+                    "box": {
+                        "x": round(x1 / W, 4),
+                        "y": round(y1 / H, 4),
+                        "w": round((x2 - x1) / W, 4),
+                        "h": round((y2 - y1) / H, 4),
+                    },
+                })
+        return out
 
-        detections = []
-        glove_count = 0
-        ppe_status = {cls: "MISSING" for cls in CLASS_NAMES}
+    def process(frame, frame_idx: int):
+        nonlocal last_detections
+        run_inf = (frame_idx % (FRAME_SKIP + 1) == 0) or frame_idx == 0
+        if run_inf:
+            last_detections = run_inference(frame)
 
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                conf = float(box.conf[0])
-                cls_id = int(box.cls[0])
+        # Always emit — if empty, send a "nothing detected" status entry
+        detections_out = last_detections if last_detections else [{
+            "id": "status",
+            "label": "No PPE detected",
+            "conf": None,
+            "box": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+        }]
+        emit_detections(dest_cam, detections_out, W, H)
 
-                if conf > CONFIDENCE_THRESHOLD and cls_id < len(CLASS_NAMES):
-                    label = CLASS_NAMES[cls_id]
-                    detections.append((cls_id, conf, (x1, y1, x2, y2)))
-                    if label == "Gloves":
-                        glove_count += 1
+    process(first_frame, 0)
+    for idx, frame in enumerate(frame_iterator, start=1):
+        process(frame, idx)
 
-        # Sort detections (Person first)
-        detections.sort(key=lambda x: (x[0] != 3, -x[1]))
-
-        # Annotate detections
-        for cls_id, conf, (x1, y1, x2, y2) in detections:
-            label = CLASS_NAMES[cls_id]
-            color = CLASS_COLORS.get(label, (255, 255, 255))
-            ppe_status[label] = "ON"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, THICKNESS)
-            cvzone.putTextRect(frame, f'{label} {conf:.2f}', (x1, max(35, y1)),
-                               scale=FONT_SCALE, thickness=THICKNESS, colorB=color,
-                               colorT=(255, 255, 255), colorR=color, offset=OFFSET)
-
-        # Additional glove logic
-        if glove_count == 1:
-            ppe_status["Gloves"] = "1 Glove: ON"
-        elif glove_count >= 2:
-            ppe_status["Gloves"] = "2 Gloves: ON"
-
-        # Draw overlay
-        frame = draw_ppe_overlay(frame, ppe_status, (20, VIDEO_RESOLUTION[1] - 180), 250, 160)
-
-        return frame
-
-    # Process frames and yield to push_stream
-    def generate_processed_frames():
-        yield process_frame(first_frame)
-        for frame in frame_iterator:
-            yield process_frame(frame)
-
-    # Push processed frames to RTSP
-    push_stream(generate_processed_frames(), VIDEO_RESOLUTION[0], VIDEO_RESOLUTION[1], fps, dest_cam)
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    SRC_CAM = "fakecam"
-    DEST_CAM = "safety"
-    FPS = 25
-    frames = pull_stream(SRC_CAM)
-    ppe_detection(frames, dest_cam=DEST_CAM, fps=FPS)
+    frames = pull_stream("cam2sub")
+    ppe_detection(frames, dest_cam="cam2sub", fps=25)

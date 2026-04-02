@@ -1,176 +1,211 @@
+# OranextEYE — AI Vision Pipeline
 
-# 📦 OranextEYE - Custom Python Library
-
-**Developed by OranextAI**
-
-A Python library for **camera streaming, AI processing (fire detection), and Kafka alerts**.  
-This library provides reusable modules for:
-
-- Pulling RTSP/video streams (`puller.py`)  
-- Pushing processed frames to RTSP (`pusher.py`)  
-- Sending notifications to Kafka (`notifier.py`)  
-- Integrating AI models for detection (`models/`)  
+Python library for pulling camera streams, running AI inference, and pushing detection events to the web app via Socket.IO — with zero video re-encoding.
 
 ---
 
-## 🗂️ Project Structure
+## How It Works
+
+```
+MediaMTX (WebRTC) ──▶ stream_manager.py (one connection per camera)
+                              │
+                    fan-out to model queues
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+        fire_detection   zone_analysis   ppe_detection  ...
+              │               │               │
+              └───────────────┴───────────────┘
+                              │
+                    emit_detections() via Socket.IO
+                              │
+                    Node.js /camera namespace
+                              │
+                    Angular canvas overlay
+                    (raw HLS video untouched)
+```
+
+**Key optimisations:**
+- Models loaded **once** via `model_registry.py`, shared across all threads
+- One WebRTC connection per camera regardless of how many models run on it
+- No FFmpeg, no encoding — detections are JSON events
+
+---
+
+## Structure
 
 ```
 oranextEYE/
-│
-├── oureyes/                 # Custom library
-│   ├── __init__.py
-│   ├── puller.py            # pull_stream(cam_name)
-│   ├── pusher.py            # push_stream(frames, width, height, fps, cam_name)
-│   ├── notifier.py          # notify_server(topic, data)
-│   └── utils.py             # build RTSP URLs etc.
-│
-├── models/                  # AI models
-│   └── fire_detection/      # Fire detection model module
-│       └── aziz.py          # Fire detection model
-│       └── test.py          # Usage example
-│
-├── main.py                  # Optional main script
-├── setup.py                 # pip installable package
-├── .env.example             # Environment variables example
-└── .env                     # Environment variables (copy from .env.example)
+├── oureyes/
+│   ├── emitter.py          # Singleton Socket.IO client → Node.js
+│   ├── model_registry.py   # Load-once model cache (YOLO, SigLIP, TrackZone)
+│   ├── stream_manager.py   # One WebRTC connection per camera, fan-out
+│   ├── puller.py           # Legacy sync puller (kept for compat)
+│   ├── puller_bis.py       # Async puller used by demo1.py
+│   ├── pusher.py           # Legacy FFmpeg pusher (kept for compat)
+│   ├── notifier.py         # Kafka alert producer
+│   └── utils.py            # URL builders
+├── models/
+│   ├── fire_detection/     # SigLIP fire/smoke classifier
+│   ├── zone_detection/     # YOLO object detection in zones
+│   ├── zone_analysis/      # YOLO worker presence + time tracking
+│   ├── ppe_detection/      # YOLO PPE compliance
+│   ├── surveillance_zones/ # YOLO zone surveillance + absence timer
+│   └── time_count/         # YOLO TrackZone working/not-working
+├── media-config/
+│   └── mediamtx.yml        # MediaMTX config (WebRTC, HLS, RTSP)
+├── demo1.py                # Main runner
+├── setup.py
+└── .env
 ```
 
 ---
 
-## ⚡ Features
+## Setup
 
-1. **Pull RTSP/video streams** with automatic reconnect:  
-
-```python
-from oureyes.puller import pull_stream
-frames = pull_stream("fakecamera")
-```
-
-2. **Push processed frames to RTSP destination**:  
-
-```python
-from oureyes.pusher import push_stream
-push_stream(frames, width, height, fps, "pulledcam")
-```
-
-3. **Send Kafka notifications** (singleton producer for efficiency):  
-
-```python
-from oureyes.notifier import notify_server
-notify_server("camera", {"data": "fire_detected", "iddevice": 19, "idattribute": 6})
-```
-
-4. **Environment-configurable** via `.env` (Kafka server, RTSP host/port)
-
----
-
-## 📥 Download / Clone Repository
-
-You can **clone the repository** directly from GitHub:
+### 1. Create conda environment
 
 ```bash
-git clone https://github.com/OranextAI/oranextEYE.git
+conda create -n nefzi_world python=3.9
+conda activate nefzi_world
+```
+
+### 2. Install the library
+
+```bash
 cd oranextEYE
-```
-
-Or **download as a ZIP** from:  
-[https://github.com/OranextAI/oranextEYE](https://github.com/OranextAI/oranextEYE)
-
----
-
-## 🔧 Setup Environment
-
-1. Create `.env` file from example:
-
-```bash
-cp .env.example .env
-```
-
-2. Create Python environment (conda recommended):
-
-```bash
-conda create -n nefzi_world python=3.10
-conda activate nefzi_world
-```
-
-3. Install the library in editable mode:
-
-```bash
 pip install -e .
+pip install "python-socketio[client]"
 ```
 
-> This allows you to import `oureyes` from anywhere and update the code live.
+### 3. Configure `.env`
+
+```env
+HOST=<mediamtx-server-ip>
+PORT=8554
+HOST_WEBRTC=<mediamtx-server-ip>
+PORT_WEBRTC=8889
+KAFKA_BOOTSTRAP_SERVERS=<kafka-ip>:19092
+BACKEND_URL=http://127.0.0.1:3000
+```
 
 ---
 
-## 📝 Notes
+## Running
 
-- **FPS and camera names** can be set in scripts or passed dynamically to functions.  
-- `notify_server()` uses a **singleton Kafka producer** to avoid reconnecting for each message.  
-- AI models can be stored in `models/` and imported as needed.  
-- This setup supports **multiple cameras** and **multiple RTSP outputs**.  
+### Start MediaMTX
 
----
+```bash
+./mediamtx media-config/mediamtx.yml
+```
 
-## 🎬 Usage Example
+### Run the AI pipeline
 
-Usage is provided in **`models/fire_detection/test.py`**:
+```bash
+conda activate nefzi_world
+python demo1.py
+```
+
+### Configure which models run
+
+Edit `demo1.py`:
 
 ```python
-from oureyes.puller import pull_stream
-from oureyes.pusher import push_stream
-from oureyes.notifier import notify_server
-from models.fire_detection.aziz import detect_fire
+INPUT_CAMS = ["cam2sub"]   # one entry per camera
 
-SRC_CAM = "fakecamera"
-DEST_CAM = "pulledcam"
-FPS = 25
+MODEL_CONFIG = {
+    "fire_detection":    {"enabled": True,  "fn": fire_detection},
+    "zone_analysis":     {"enabled": True,  "fn": zone_analysis},
+    "ppe_detection":     {"enabled": False, "fn": ppe_detection},
+    "surveillance_zones":{"enabled": False, "fn": surveillance_zones},
+    "time_count":        {"enabled": False, "fn": time_count},
+    "zone_detection":    {"enabled": False, "fn": zone_detection},
+}
+```
 
-frames = pull_stream(SRC_CAM)
-first_frame = next(frames)
-height, width = first_frame.shape[:2]
+Each enabled model gets its own thread and its own frame queue. The camera connection is shared.
 
-def processed_frames():
-    yield detect_fire(first_frame)
-    for f in frames:
-        processed = detect_fire(f)
+---
 
-        # Example: send Kafka alert
-        notify_server("camera", {
-            "data": "fire_detected",
-            "iddevice": 19,
-            "idattribute": 6
-        })
+## Writing a New Model
 
-        yield processed
+```python
+# oranextEYE/models/my_model/my_model.py
 
-push_stream(processed_frames(), width, height, FPS, DEST_CAM)
+from oureyes.emitter import emit_detections
+from oureyes.model_registry import get_yolo
+
+def my_model(frames, dest_cam: str, fps: int):
+    MODEL_PATH = "path/to/weights.pt"
+    model = get_yolo(MODEL_PATH)   # loaded once, cached forever
+
+    frame_iter = iter(frames)
+    first = next(frame_iter)
+    W, H = first.shape[1], first.shape[0]
+
+    def process(frame):
+        results = model(frame, verbose=False)[0]
+        detections = []
+        for box in results.boxes:
+            x1, y1, x2, y2 = map(float, box.xyxy[0])
+            detections.append({
+                "label": model.names[int(box.cls[0])],
+                "conf":  round(float(box.conf[0]), 3),
+                "box": {
+                    "x": round(x1 / W, 4), "y": round(y1 / H, 4),
+                    "w": round((x2 - x1) / W, 4), "h": round((y2 - y1) / H, 4),
+                },
+            })
+        emit_detections(dest_cam, detections, W, H)
+
+    process(first)
+    for frame in frame_iter:
+        process(frame)
+```
+
+Then add to `demo1.py`:
+```python
+from models.my_model.my_model import my_model
+
+MODEL_CONFIG = {
+    ...
+    "my_model": {"enabled": True, "fn": my_model},
+}
 ```
 
 ---
 
-## 🚀 Running
+## Detection Event Format
 
-```bash
-conda activate nefzi_world
-python models/fire_detection/test.py
+Sent via Socket.IO to Node.js `/camera` namespace, then broadcast to Angular:
+
+```json
+{
+  "streamId": "cam2sub",
+  "ts": 1712345678000,
+  "width": 1280,
+  "height": 720,
+  "detections": [
+    {
+      "id": "42",
+      "label": "fire",
+      "conf": 0.91,
+      "box": { "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4 }
+    }
+  ]
+}
 ```
 
-- Stream from `SRC_CAM`  
-- Apply AI detection  
-- Push to `DEST_CAM`  
-- Send Kafka notifications for events
+`streamId` must match the `streamId` input of the Angular `<app-video-viewer>` component.  
+All box values are normalised `[0..1]`.
 
+---
 
-## 👨‍💻 Author
+## Author
 
 **OranextAI — Smart Factory 4.0 Team**  
-🔗 [https://github.com/OranextAI](https://github.com/OranextAI)
+https://github.com/OranextAI
 
----
+## License
 
-## 📜 License
-
-© 2025 OranextAI. All rights reserved.  
-Unauthorized use, modification, or distribution is prohibited without permission.
+© 2025 OranextAI. All rights reserved.

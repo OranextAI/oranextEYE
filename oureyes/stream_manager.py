@@ -21,7 +21,7 @@ except AttributeError:
     pass
 
 # Configuration constants
-MAX_QUEUE_SIZE = 30  # Buffer size for frames
+MAX_QUEUE_SIZE = 1  # Always process the latest frame — model is slower than camera
 
 # ======================================================
 # Stream Broadcaster
@@ -88,26 +88,18 @@ class StreamBroadcaster:
                                     
                                     for queue in self.queues:
                                         try:
-                                            # Always copy frame for each queue to ensure independence
-                                            frame_to_put = np.copy(img)
-                                            # Register capture time for latency debugging
-                                            register_capture(self.cam_name, frame_to_put)
+                                            frame_to_put = np.copy(img) if len(self.queues) > 1 else img
                                             queue.put_nowait(frame_to_put)
                                         except asyncio.QueueFull:
-                                            # Queue full, drop oldest frame and add new one
-                                            dropped_frames += 1
-                                            if dropped_frames in (1, 100, 1000) or dropped_frames % 2000 == 0:
-                                                print(f"⚠️ [{self.cam_name}] Broadcaster dropped {dropped_frames} frame(s) due to slow subscribers")
+                                            # Model is slower than camera — drop oldest, keep newest
+                                            # This is expected and correct, no warning needed
                                             try:
                                                 queue.get_nowait()
-                                                frame_to_put = np.copy(img)
-                                                # Register capture time again for the replacement frame
-                                                register_capture(self.cam_name, frame_to_put)
+                                                frame_to_put = np.copy(img) if len(self.queues) > 1 else img
                                                 queue.put_nowait(frame_to_put)
                                             except:
                                                 pass
                                         except Exception:
-                                            # Queue may have been removed
                                             queues_to_remove.append(queue)
                                     for q in queues_to_remove:
                                         if q in self.queues:

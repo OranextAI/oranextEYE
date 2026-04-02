@@ -1,127 +1,141 @@
-import numpy as np
-import supervision as sv
+"""
+zone_detection.py — Optimised version.
+
+Detects objects inside defined polygon zones using YOLO.
+Emits zone polygons + bounding-box detections to Angular overlay via Socket.IO.
+Model loaded once via model_registry, shared across all threads.
+"""
+
 import cv2
 import json
 import os
-from ultralytics import YOLO
-from supervision.draw.color import Color, ColorPalette
-from oureyes.pusher import push_stream
+import numpy as np
+import supervision as sv
 
-def zone_detection(frames, dest_cam, fps):
+from oureyes.emitter import emit_detections
+from oureyes.model_registry import get_yolo
+
+# ── Config ────────────────────────────────────────────────────────────────
+CONFIDENCE_THRESHOLD = 0.1
+IMAGE_SIZE           = 1280
+FRAME_SKIP           = 2
+
+
+def zone_detection(frames, dest_cam: str, fps: int,
+                   zone_points: list = None):
     """
-    Process frames from a stream, detect objects in zones from JSON, annotate detections, and push to RTSP.
+    Detect objects inside defined zones and emit to Angular overlay.
 
     Args:
-        frames: Generator yielding frames (NumPy arrays) from pull_stream.
-        dest_cam (str): Destination RTSP camera name (e.g., 'zone_detection').
-        fps (int): Frames per second for the output stream.
+        frames:   Generator yielding BGR numpy frames.
+        dest_cam: Socket.IO streamId.
+        fps:      Unused — kept for API compatibility.
     """
-    # Configuration
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "startup.pt")
     ZONES_FILE = os.path.join(os.path.dirname(__file__), "zones_detection.json")
-    CONFIDENCE_THRESHOLD = 0.1
-    IMAGE_SIZE = 1280
 
-    # Get frame resolution from the first frame
     frame_iterator = iter(frames)
     try:
         first_frame = next(frame_iterator)
     except StopIteration:
-        print("Error: No frames available from input stream")
+        print("[zone_detection] No frames available")
         return
 
-    VIDEO_RESOLUTION = (first_frame.shape[1], first_frame.shape[0])
-    print(f"Detected frame resolution: {VIDEO_RESOLUTION}")
+    W, H = first_frame.shape[1], first_frame.shape[0]
+    print(f"[zone_detection] {dest_cam} — {W}x{H}")
 
-    # Load zones from JSON
-    if not os.path.exists(ZONES_FILE):
-        print(f"Error: No zones file found at {ZONES_FILE}")
+    if not os.path.exists(ZONES_FILE) and not zone_points:
+        print(f"[zone_detection] No zones configured for {dest_cam}")
+        def process_no_zones(frame, frame_idx):
+            emit_detections(dest_cam, [{
+                "id": "status", "label": "No zones configured",
+                "conf": None, "box": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+            }], W, H)
+        process_no_zones(first_frame, 0)
+        for idx, frame in enumerate(frame_iterator, start=1):
+            process_no_zones(frame, idx)
         return
-    try:
-        with open(ZONES_FILE, 'r') as f:
+
+    # Zones come from DB via demo1.py (zone_points parameter)
+    # JSON file is kept only as a standalone test fallback
+    if zone_points:
+        zones_data = zone_points
+    elif os.path.exists(ZONES_FILE):
+        print(f"[zone_detection] Warning: using JSON fallback — run via demo1.py for DB zones")
+        with open(ZONES_FILE) as f:
             zones_data = json.load(f)
-    except Exception as e:
-        print(f"Error loading zones file: {e}")
-        return
+    else:
+        zones_data = []
 
-    # Convert normalized zone coordinates to pixel coordinates
-    polygons = []
-    for zone in zones_data:
-        poly = [[int(point['x'] * VIDEO_RESOLUTION[0]), int(point['y'] * VIDEO_RESOLUTION[1])] for point in zone]
-        polygons.append(np.array(poly, dtype=np.int32))
+    # Pixel polygons for OpenCV point-in-polygon test
+    polygons_px = [
+        np.array([[int(p["x"] * W), int(p["y"] * H)] for p in zone], dtype=np.int32)
+        for zone in zones_data
+    ]
 
-    # Load YOLO model
-    try:
-        import torch  # kept for future GPU support if needed
-        # Force CPU to avoid meta-tensor device transfer issues.
-        device = "cpu"
-        model = YOLO(MODEL_PATH)  # do not call .to(device) explicitly
-        print(f"Model '{MODEL_PATH}' loaded successfully on {device}.")
-    except Exception as e:
-        print(f"Error loading YOLO model: {e}")
-        import traceback
-        traceback.print_exc()
-        return
+    # Normalised polygon points for Angular canvas
+    zones_norm = [
+        [{"x": p["x"], "y": p["y"]} for p in zone]
+        for zone in zones_data
+    ]
 
-    # Initialize annotator
-    colors = ColorPalette(colors=[Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)])
-    box_annotator = sv.BoxAnnotator(color=colors.by_idx(0), thickness=4)
+    model = get_yolo(MODEL_PATH)
+    last_detections: list = []
 
-    def process_frame(frame):
-        """Process a single frame and return the annotated frame."""
-        if (frame.shape[1], frame.shape[0]) != VIDEO_RESOLUTION:
-            frame = cv2.resize(frame, VIDEO_RESOLUTION)
+    def run_inference(frame) -> list:
+        if (frame.shape[1], frame.shape[0]) != (W, H):
+            frame = cv2.resize(frame, (W, H))
 
-        # Perform object detection
-        results = model(frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
-        detections = sv.Detections.from_ultralytics(results)
+        results  = model(frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
+        sv_dets  = sv.Detections.from_ultralytics(results)
 
-        if len(detections) == 0:
-            # Draw polygons even if no detections
-            for poly in polygons:
-                cv2.polylines(frame, [poly], isClosed=True, color=(0, 255, 0), thickness=2)
-            return frame
+        out = []
 
-        # Filter detections within the defined zones
-        filtered_indices = []
-        for i, (x1, y1, x2, y2) in enumerate(detections.xyxy):
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-            for poly in polygons:
-                if cv2.pointPolygonTest(poly, (center_x, center_y), False) >= 0:
-                    filtered_indices.append(i)
-                    break
+        # Object detections inside zones only (no polygon data — zones come from DB)
+        in_zone_count = 0
+        for i, (x1, y1, x2, y2) in enumerate(sv_dets.xyxy):
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            in_zone = any(
+                cv2.pointPolygonTest(poly, (cx, cy), False) >= 0
+                for poly in polygons_px
+            )
+            if not in_zone:
+                continue
+            in_zone_count += 1
+            conf  = float(sv_dets.confidence[i]) if sv_dets.confidence is not None else None
+            label = model.names[int(sv_dets.class_id[i])] if sv_dets.class_id is not None else "object"
+            out.append({
+                "label": label,
+                "conf":  round(conf, 3) if conf is not None else None,
+                "box": {
+                    "x": round(x1 / W, 4), "y": round(y1 / H, 4),
+                    "w": round((x2 - x1) / W, 4), "h": round((y2 - y1) / H, 4),
+                },
+            })
 
-        # Ensure filtered_indices is a numpy array of integers
-        filtered_indices = np.array(filtered_indices, dtype=int)
+        if in_zone_count == 0:
+            out.append({
+                "id":    "status",
+                "label": "No objects in zones",
+                "conf":  None,
+                "box":   {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+            })
 
-        # Keep only the filtered detections
-        detections_filtered = detections[filtered_indices]
+        return out
 
-        # Annotate the frame with filtered detections
-        frame = box_annotator.annotate(scene=frame, detections=detections_filtered)
+    def process(frame, frame_idx: int):
+        nonlocal last_detections
+        run_inf = (frame_idx % (FRAME_SKIP + 1) == 0) or frame_idx == 0
+        if run_inf:
+            last_detections = run_inference(frame)
+        emit_detections(dest_cam, last_detections, W, H)
 
-        # Draw the defined zones on the frame
-        for poly in polygons:
-            cv2.polylines(frame, [poly], isClosed=True, color=(0, 255, 0), thickness=2)
+    process(first_frame, 0)
+    for idx, frame in enumerate(frame_iterator, start=1):
+        process(frame, idx)
 
-        return frame
-
-    # Process frames and yield to push_stream
-    def generate_processed_frames():
-        yield process_frame(first_frame)
-        for frame in frame_iterator:
-            yield process_frame(frame)
-
-    # Push processed frames to RTSP
-    print("Processing stream...")
-    push_stream(generate_processed_frames(), VIDEO_RESOLUTION[0], VIDEO_RESOLUTION[1], fps, dest_cam)
-    print("Done.")
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    SRC_CAM = "cam2sub"
-    DEST_CAM = "fire2"
-    FPS = 25
-    frames = pull_stream(SRC_CAM)
-    zone_detection(frames, dest_cam=DEST_CAM, fps=FPS)
+    frames = pull_stream("cam2sub")
+    zone_detection(frames, dest_cam="cam2sub", fps=25)

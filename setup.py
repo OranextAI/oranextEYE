@@ -7,6 +7,7 @@ setup(
     install_requires=[
         "opencv-python",
         "python-dotenv",
+        "python-socketio[client]",  # emitter.py — send detections to Node.js
     ],
     entry_points={
         "console_scripts": [

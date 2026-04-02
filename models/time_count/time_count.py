@@ -1,133 +1,99 @@
+"""
+time_count.py — Optimised version.
+
+Changes vs original:
+- Removed push_stream / FFmpeg encoding entirely.
+- Uses emit_detections() to send JSON to the Angular overlay via Socket.IO.
+- Model loaded via model_registry (loaded once, shared across all threads).
+"""
+
 import cv2
-import numpy as np
 import json
 import os
-from ultralytics import solutions
-from oureyes.pusher import push_stream
+import numpy as np
 
-def time_count(frames, dest_cam, fps):
+from oureyes.emitter import emit_detections
+from oureyes.model_registry import get_trackzone
+
+
+def time_count(frames, dest_cam: str, fps: int):
     """
-    Process frames from a stream, track objects in zones from JSON, label as Working/Not Working, and push to RTSP.
+    Track objects in zones (working / not working) and emit detections to Angular.
 
     Args:
-        frames: Generator yielding frames (NumPy arrays) from pull_stream.
-        dest_cam (str): Destination RTSP camera name (e.g., 'time_count').
-        fps (int): Frames per second for the output stream.
+        frames:   Generator yielding BGR numpy frames.
+        dest_cam: Stream ID sent to Angular.
+        fps:      Unused — kept for API compatibility.
     """
-    # Configuration
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8n.pt")
     ZONES_FILE = os.path.join(os.path.dirname(__file__), "zones_time_count.json")
 
-    # Get frame resolution from the first frame
     frame_iterator = iter(frames)
     try:
         first_frame = next(frame_iterator)
     except StopIteration:
-        print("Error: No frames available from input stream")
+        print("[time_count] No frames available")
         return
 
-    VIDEO_RESOLUTION = (first_frame.shape[1], first_frame.shape[0])
-    print(f"Detected frame resolution: {VIDEO_RESOLUTION}")
+    W, H = first_frame.shape[1], first_frame.shape[0]
+    print(f"[time_count] {dest_cam} — {W}x{H}")
 
-    # Load zones from JSON
     if not os.path.exists(ZONES_FILE):
-        print(f"Error: No zones file found at {ZONES_FILE}")
+        print(f"[time_count] Zones file not found: {ZONES_FILE}")
         return
-    try:
-        with open(ZONES_FILE, 'r') as f:
-            zones_data = json.load(f)
-    except Exception as e:
-        print(f"Error loading zones file: {e}")
-        return
+    with open(ZONES_FILE) as f:
+        zones_data = json.load(f)
 
-    # Convert normalized zone coordinates to pixel coordinates
-    region_polygons = []
-    for zone in zones_data:
-        poly = [[int(point['x'] * VIDEO_RESOLUTION[0]), int(point['y'] * VIDEO_RESOLUTION[1])] for point in zone]
-        region_polygons.append(np.array(poly, dtype=np.int32))
+    region_polygons = [
+        np.array([[int(p["x"] * W), int(p["y"] * H)] for p in zone], dtype=np.int32)
+        for zone in zones_data
+    ]
 
-    # Initialize TrackZone with the first region (if available)
-    try:
-        trackzone = solutions.TrackZone(
-            show=False,  # Disable display for server environment
-            region=region_polygons[0] if region_polygons else [],  # Use first region
-            model=MODEL_PATH,
-            verbose=False  # Suppress YOLO verbose output
+    first_region = region_polygons[0].tolist() if region_polygons else []
+    trackzone = get_trackzone(MODEL_PATH, first_region)
+
+    def in_any_region(cx, cy):
+        return any(
+            cv2.pointPolygonTest(poly, (cx, cy), False) >= 0
+            for poly in region_polygons
         )
-    except Exception as e:
-        print(f"Error initializing TrackZone: {e}")
-        return
 
-    def is_inside_region(x, y, region):
-        """Check if the point (x, y) is inside the polygon region."""
-        return cv2.pointPolygonTest(region, (x, y), False) >= 0
+    def process(frame):
+        if (frame.shape[1], frame.shape[0]) != (W, H):
+            frame = cv2.resize(frame, (W, H))
 
-    def process_frame(frame):
-        """Process a single frame and return the annotated frame."""
-        if (frame.shape[1], frame.shape[0]) != VIDEO_RESOLUTION:
-            frame = cv2.resize(frame, VIDEO_RESOLUTION)
-
-        # Perform object tracking
         results = trackzone.trackzone(frame)
+        detections_out = []
 
-        # If results is an image tensor, fall back to drawing polygons only
-        if isinstance(results, np.ndarray):
-            print("Warning: TrackZone returned an image array instead of detection results.")
-            for poly in region_polygons:
-                cv2.polylines(frame, [poly], isClosed=True, color=(255, 0, 0), thickness=2)
-            return frame
-
-        # Process bounding boxes if available
-        if hasattr(results, 'boxes'):
+        if hasattr(results, "boxes") and results.boxes is not None:
             boxes = results.boxes.xyxy.cpu().numpy()
-            ids = results.boxes.id.cpu().numpy() if hasattr(results.boxes, 'id') else None
+            ids = (results.boxes.id.cpu().numpy()
+                   if hasattr(results.boxes, "id") and results.boxes.id is not None
+                   else None)
 
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = map(int, box)
-                obj_id = ids[i] if ids is not None else None
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
+                obj_id = str(int(ids[i])) if ids is not None else None
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                working = in_any_region(cx, cy)
+                detections_out.append({
+                    "id": obj_id,
+                    "label": "Working" if working else "Not Working",
+                    "conf": None,
+                    "box": {
+                        "x": round(x1 / W, 4), "y": round(y1 / H, 4),
+                        "w": round((x2 - x1) / W, 4), "h": round((y2 - y1) / H, 4),
+                    },
+                })
 
-                # Check if the object is inside any region
-                inside_any_region = False
-                for poly in region_polygons:
-                    if is_inside_region(center_x, center_y, poly):
-                        inside_any_region = True
-                        break
+        emit_detections(dest_cam, detections_out, W, H)
 
-                # Label and color based on region status
-                if inside_any_region:
-                    box_color = (0, 255, 0)  # Green for Working
-                    label = f"ID: {obj_id} - Working" if obj_id is not None else "Object - Working"
-                else:
-                    box_color = (0, 0, 255)  # Red for Not Working
-                    label = f"ID: {obj_id} - Not Working" if obj_id is not None else "Object - Not Working"
+    process(first_frame)
+    for frame in frame_iterator:
+        process(frame)
 
-                # Draw bounding box and label
-                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
-
-        # Draw all region polygons
-        for poly in region_polygons:
-            cv2.polylines(frame, [poly], isClosed=True, color=(255, 0, 0), thickness=2)
-
-        return frame
-
-    # Process frames and yield to push_stream
-    def generate_processed_frames():
-        yield process_frame(first_frame)
-        for frame in frame_iterator:
-            yield process_frame(frame)
-
-    # Push processed frames to RTSP
-    print("Processing stream...")
-    push_stream(generate_processed_frames(), VIDEO_RESOLUTION[0], VIDEO_RESOLUTION[1], fps, dest_cam)
-    print("Done.")
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    SRC_CAM = "cam2sub"
-    DEST_CAM = "fire2"
-    FPS = 25
-    frames = pull_stream(SRC_CAM)
-    time_count(frames, dest_cam=DEST_CAM, fps=FPS)
+    frames = pull_stream("cam2sub")
+    time_count(frames, dest_cam="cam2sub", fps=25)
