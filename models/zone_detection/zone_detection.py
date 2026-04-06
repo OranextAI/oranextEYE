@@ -13,7 +13,7 @@ import numpy as np
 import supervision as sv
 
 from oureyes.emitter import emit_detections
-from oureyes.model_registry import get_yolo
+from oureyes.model_registry import get_yolo, get_yolo_lock
 
 # ── Config ────────────────────────────────────────────────────────────────
 CONFIDENCE_THRESHOLD = 0.1
@@ -80,13 +80,15 @@ def zone_detection(frames, dest_cam: str, fps: int,
     ]
 
     model = get_yolo(MODEL_PATH)
+    _infer_lock = get_yolo_lock(MODEL_PATH)
     last_detections: list = []
 
     def run_inference(frame) -> list:
         if (frame.shape[1], frame.shape[0]) != (W, H):
             frame = cv2.resize(frame, (W, H))
 
-        results  = model(frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
+        with _infer_lock:
+            results = model(frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
         sv_dets  = sv.Detections.from_ultralytics(results)
 
         out = []

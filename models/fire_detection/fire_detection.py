@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 from oureyes.emitter import emit_detections
-from oureyes.model_registry import get_siglip, DEVICE
+from oureyes.model_registry import get_siglip, get_siglip_lock, DEVICE
 from oureyes.notifier import notify_server
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ def fire_detection(frames, dest_cam: str, fps: int):
 
     device = torch.device(DEVICE)
     model, processor, model_enabled = get_siglip(MODEL_NAME)
+    _infer_lock = get_siglip_lock(MODEL_NAME)
 
     # ── Grab first frame to get resolution ────────────────────────────────
     frame_iterator = iter(frames)
@@ -65,8 +66,9 @@ def fire_detection(frames, dest_cam: str, fps: int):
         image = Image.fromarray(frame_rgb).convert("RGB")
         inputs = processor(images=image, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        with torch.no_grad():
-            logits = model(**inputs).logits
+        with _infer_lock:
+            with torch.no_grad():
+                logits = model(**inputs).logits
             probs = torch.nn.functional.softmax(logits, dim=1).squeeze().cpu().tolist()
 
         labels = model.config.id2label

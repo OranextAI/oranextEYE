@@ -10,7 +10,7 @@ import cv2
 import os
 
 from oureyes.emitter import emit_detections
-from oureyes.model_registry import get_yolo
+from oureyes.model_registry import get_yolo, get_yolo_lock
 
 # ── Config ────────────────────────────────────────────────────────────────
 CLASS_NAMES        = ['Gloves', 'HairNet', 'Labcoat', 'Person']
@@ -40,21 +40,20 @@ def ppe_detection(frames, dest_cam: str, fps: int):
     print(f"[ppe_detection] {dest_cam} — {W}x{H}")
 
     model = get_yolo(MODEL_PATH)
+    _infer_lock = get_yolo_lock(MODEL_PATH)
 
     last_detections: list = []
 
     def run_inference(frame) -> list:
         """Run YOLO and return normalised detection list."""
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = model(
-            img_rgb,
-            conf=CONFIDENCE_THRESHOLD,
-            classes=list(range(len(CLASS_NAMES))),
-            verbose=False,
-        )
-
-        out = []
-        # results is a list when stream=False
+        with _infer_lock:
+            results = model(
+                img_rgb,
+                conf=CONFIDENCE_THRESHOLD,
+                classes=list(range(len(CLASS_NAMES))),
+                verbose=False,
+            )
         r = results[0] if isinstance(results, list) else results
         for box in r.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])

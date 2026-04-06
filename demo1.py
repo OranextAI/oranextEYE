@@ -23,6 +23,8 @@ from models.fire_detection.fire_detection import fire_detection
 from models.ppe_detection.ppe_detection import ppe_detection
 from models.zone_detection.zone_detection import zone_detection
 from models.zone_analysis.zone_analysis import zone_analysis
+from models.surveillance_zones.surveillance_zones import surveillance_zones
+from models.time_count.time_count import time_count
 
 # ── Config ────────────────────────────────────────────────────────────────
 FPS          = 25
@@ -31,10 +33,12 @@ RESTART_DELAY = 5   # seconds before restarting a crashed thread
 
 # Map model_name → function
 MODEL_FN = {
-    "fire_detection":  fire_detection,
-    "ppe_detection":   ppe_detection,
-    "zone_detection":  zone_detection,
-    "zone_analysis":   zone_analysis,
+    "fire_detection":     fire_detection,
+    "ppe_detection":      ppe_detection,
+    "zone_detection":     zone_detection,
+    "zone_analysis":      zone_analysis,
+    "surveillance_zones": surveillance_zones,
+    "time_count":         time_count,
 }
 
 # ── DB connection (persistent, reconnects on error) ───────────────────────
@@ -115,7 +119,7 @@ def sync_frames(queue, loop, label, stop_event):
 def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None):
     """Run model in a loop, respecting stop_event."""
     # Models that accept zone_points
-    ZONE_MODELS = {"zone_analysis", "zone_detection", "surveillance_zones"}
+    ZONE_MODELS = {"zone_analysis", "zone_detection", "surveillance_zones", "time_count"}
     model_name = label.split("[")[0]
 
     while not stop_event.is_set():

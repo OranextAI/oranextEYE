@@ -1,32 +1,34 @@
 """
 time_count.py — Optimised version.
 
-Changes vs original:
-- Removed push_stream / FFmpeg encoding entirely.
-- Uses emit_detections() to send JSON to the Angular overlay via Socket.IO.
-- Model loaded via model_registry (loaded once, shared across all threads).
+Tracks objects with IDs, labels them Working/Not Working based on zone presence.
+Zones come from DB via demo1.py (zone_points parameter).
+Emits bounding boxes with Working/Not Working labels to Angular overlay.
+Model loaded once via model_registry, shared across all threads.
 """
 
 import cv2
-import json
 import os
 import numpy as np
 
 from oureyes.emitter import emit_detections
-from oureyes.model_registry import get_trackzone
+from oureyes.model_registry import get_yolo, get_yolo_lock
+
+FRAME_SKIP = 2
 
 
-def time_count(frames, dest_cam: str, fps: int):
+def time_count(frames, dest_cam: str, fps: int,
+               zone_points: list = None):
     """
-    Track objects in zones (working / not working) and emit detections to Angular.
+    Track objects and label Working/Not Working based on zone presence.
 
     Args:
-        frames:   Generator yielding BGR numpy frames.
-        dest_cam: Stream ID sent to Angular.
-        fps:      Unused — kept for API compatibility.
+        frames:      Generator yielding BGR numpy frames.
+        dest_cam:    Socket.IO streamId.
+        fps:         Unused — kept for API compatibility.
+        zone_points: List of zone polygon lists [[{x,y},...], ...] normalised 0-1.
     """
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8n.pt")
-    ZONES_FILE = os.path.join(os.path.dirname(__file__), "zones_time_count.json")
 
     frame_iterator = iter(frames)
     try:
@@ -38,59 +40,85 @@ def time_count(frames, dest_cam: str, fps: int):
     W, H = first_frame.shape[1], first_frame.shape[0]
     print(f"[time_count] {dest_cam} — {W}x{H}")
 
-    if not os.path.exists(ZONES_FILE):
-        print(f"[time_count] Zones file not found: {ZONES_FILE}")
-        return
-    with open(ZONES_FILE) as f:
-        zones_data = json.load(f)
+    # Zones from DB (preferred) or JSON fallback
+    if zone_points:
+        zones_data = zone_points
+    else:
+        ZONES_FILE = os.path.join(os.path.dirname(__file__), "zones_time_count.json")
+        if os.path.exists(ZONES_FILE):
+            import json
+            print(f"[time_count] Warning: using JSON fallback — run via demo1.py for DB zones")
+            with open(ZONES_FILE) as f:
+                zones_data = json.load(f)
+        else:
+            zones_data = []
+
+    if not zones_data:
+        print(f"[time_count] No zones configured for {dest_cam}")
 
     region_polygons = [
         np.array([[int(p["x"] * W), int(p["y"] * H)] for p in zone], dtype=np.int32)
         for zone in zones_data
     ]
 
-    first_region = region_polygons[0].tolist() if region_polygons else []
-    trackzone = get_trackzone(MODEL_PATH, first_region)
+    # Use plain YOLO + supervision ByteTrack instead of TrackZone
+    # (avoids TrackZone's init-time region binding which breaks model_registry caching)
+    import supervision as sv
+    model   = get_yolo(MODEL_PATH)
+    _infer_lock = get_yolo_lock(MODEL_PATH)
+    tracker = sv.ByteTrack()
 
-    def in_any_region(cx, cy):
+    def in_any_region(cx: float, cy: float) -> bool:
         return any(
             cv2.pointPolygonTest(poly, (cx, cy), False) >= 0
             for poly in region_polygons
         )
 
-    def process(frame):
+    last_detections: list = []
+
+    def run_inference(frame) -> list:
         if (frame.shape[1], frame.shape[0]) != (W, H):
             frame = cv2.resize(frame, (W, H))
 
-        results = trackzone.trackzone(frame)
-        detections_out = []
+        with _infer_lock:
+            results = model(frame, verbose=False, conf=0.25)[0]
+        sv_dets = sv.Detections.from_ultralytics(results)
+        sv_dets = tracker.update_with_detections(sv_dets)
 
-        if hasattr(results, "boxes") and results.boxes is not None:
-            boxes = results.boxes.xyxy.cpu().numpy()
-            ids = (results.boxes.id.cpu().numpy()
-                   if hasattr(results.boxes, "id") and results.boxes.id is not None
-                   else None)
-
-            for i, box in enumerate(boxes):
-                x1, y1, x2, y2 = map(int, box)
-                obj_id = str(int(ids[i])) if ids is not None else None
-                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        out = []
+        if sv_dets.tracker_id is not None:
+            for i, tid in enumerate(sv_dets.tracker_id):
+                x1, y1, x2, y2 = sv_dets.xyxy[i]
+                cx, cy  = (x1 + x2) / 2, (y1 + y2) / 2
                 working = in_any_region(cx, cy)
-                detections_out.append({
-                    "id": obj_id,
+                out.append({
+                    "id":    str(tid),
                     "label": "Working" if working else "Not Working",
-                    "conf": None,
+                    "conf":  None,
                     "box": {
                         "x": round(x1 / W, 4), "y": round(y1 / H, 4),
                         "w": round((x2 - x1) / W, 4), "h": round((y2 - y1) / H, 4),
                     },
                 })
 
-        emit_detections(dest_cam, detections_out, W, H)
+        if not out:
+            out.append({
+                "id": "status", "label": "No objects detected",
+                "conf": None, "box": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+            })
 
-    process(first_frame)
-    for frame in frame_iterator:
-        process(frame)
+        return out
+
+    def process(frame, frame_idx: int):
+        nonlocal last_detections
+        run_inf = (frame_idx % (FRAME_SKIP + 1) == 0) or frame_idx == 0
+        if run_inf:
+            last_detections = run_inference(frame)
+        emit_detections(dest_cam, last_detections, W, H)
+
+    process(first_frame, 0)
+    for idx, frame in enumerate(frame_iterator, start=1):
+        process(frame, idx)
 
 
 if __name__ == "__main__":

@@ -1,33 +1,42 @@
 """
-model_registry.py — Global model cache.
+model_registry.py — Global model cache with per-model inference locks.
 
-Loads each AI model exactly ONCE, no matter how many cameras or threads
-use it. All threads share the same model instance.
+Loads each AI model exactly ONCE. Multiple cameras sharing the same model
+use a per-model lock to serialize inference calls — Ultralytics YOLO's
+internal predictor state is not thread-safe for concurrent calls on the
+same object.
 
-Thread safety: model inference (YOLO / SigLIP) is stateless for a single
-forward pass, so sharing the loaded model object across threads is safe as
-long as each thread builds its own input tensors (which they do).
-
-Usage:
-    from oureyes.model_registry import get_yolo, get_siglip
-
-    model = get_yolo("/path/to/weights.pt")   # loaded once, cached forever
+This means two cameras running the same model will take turns on inference
+(each call is ~30-100ms on GPU) — still far cheaper than loading the model
+twice (which would double VRAM usage).
 """
 
 import threading
 from typing import Any, Dict
 import torch
 
-_lock = threading.Lock()
+_lock  = threading.Lock()          # protects _cache writes
 _cache: Dict[str, Any] = {}
+_model_locks: Dict[str, threading.Lock] = {}  # per-model inference lock
 
-# Auto-select device once at import time
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[model_registry] Using device: {DEVICE}")
 
 
+def _get_inference_lock(key: str) -> threading.Lock:
+    """Return (creating if needed) the per-model inference lock."""
+    if key not in _model_locks:
+        with _lock:
+            if key not in _model_locks:
+                _model_locks[key] = threading.Lock()
+    return _model_locks[key]
+
+
 def get_yolo(model_path: str):
-    """Return a cached YOLO model, loading it on first call."""
+    """
+    Return a cached YOLO model.
+    Callers must acquire get_yolo_lock(model_path) around each inference call.
+    """
     key = f"yolo:{model_path}"
     if key not in _cache:
         with _lock:
@@ -42,8 +51,13 @@ def get_yolo(model_path: str):
     return _cache[key]
 
 
+def get_yolo_lock(model_path: str) -> threading.Lock:
+    """Return the inference lock for a YOLO model path."""
+    return _get_inference_lock(f"yolo:{model_path}")
+
+
 def get_siglip(model_name: str):
-    """Return a cached SigLIP (model, processor, enabled) tuple, loading on first call."""
+    """Return a cached SigLIP (model, processor, enabled) tuple."""
     key = f"siglip:{model_name}"
     if key not in _cache:
         with _lock:
@@ -57,7 +71,7 @@ def get_siglip(model_name: str):
                     model = model.to(DEVICE)
                 model.eval()
                 try:
-                    dummy = Image.new("RGB", (224, 224), 0)
+                    dummy  = Image.new("RGB", (224, 224), 0)
                     inputs = processor(images=dummy, return_tensors="pt")
                     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
                     with torch.no_grad():
@@ -70,16 +84,6 @@ def get_siglip(model_name: str):
     return _cache[key]
 
 
-def get_trackzone(model_path: str, region):
-    """Return a cached TrackZone instance."""
-    key = f"trackzone:{model_path}"
-    if key not in _cache:
-        with _lock:
-            if key not in _cache:
-                from ultralytics import solutions
-                print(f"[model_registry] Loading TrackZone: {model_path}")
-                _cache[key] = solutions.TrackZone(
-                    show=False, region=region, model=model_path, verbose=False
-                )
-                print(f"[model_registry] TrackZone loaded: {model_path}")
-    return _cache[key]
+def get_siglip_lock(model_name: str) -> threading.Lock:
+    """Return the inference lock for a SigLIP model."""
+    return _get_inference_lock(f"siglip:{model_name}")

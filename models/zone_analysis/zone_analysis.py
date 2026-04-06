@@ -13,7 +13,7 @@ import numpy as np
 import supervision as sv
 
 from oureyes.emitter import emit_detections
-from oureyes.model_registry import get_yolo
+from oureyes.model_registry import get_yolo, get_yolo_lock
 
 # ── Config ────────────────────────────────────────────────────────────────
 WORKER_CLASS_ID      = 0
@@ -70,6 +70,7 @@ def zone_analysis(frames, dest_cam: str, fps: int,
     ]
 
     model   = get_yolo(MODEL_PATH)
+    _infer_lock = get_yolo_lock(MODEL_PATH)
     tracker = sv.ByteTrack()
 
     detection_mask = np.zeros((H, W), dtype=np.uint8)
@@ -97,8 +98,9 @@ def zone_analysis(frames, dest_cam: str, fps: int,
             d["workers_present_now"] = 0
 
         masked  = cv2.bitwise_and(frame, frame, mask=detection_mask)
-        results = model(masked, imgsz=W, verbose=False, conf=0.25,
-                        classes=[WORKER_CLASS_ID])[0]
+        with _infer_lock:
+            results = model(masked, imgsz=W, verbose=False, conf=0.25,
+                            classes=[WORKER_CLASS_ID])[0]
         sv_dets = sv.Detections.from_ultralytics(results)
         sv_dets = tracker.update_with_detections(sv_dets)
 
