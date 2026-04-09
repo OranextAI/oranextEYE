@@ -142,7 +142,7 @@ authJWTInHTTPQuery: true
 # Global settings -> Control API
 
 # Enable controlling the server through the Control API.
-api: no
+api: yes
 # Address of the Control API listener.
 apiAddress: :9997
 # Enable TLS/HTTPS on the Control API server.
@@ -211,7 +211,7 @@ pprofTrustedProxies: []
 # Global settings -> Playback server
 
 # Enable downloading recordings from the playback server.
-playback: no
+playback: yes
 # Address of the playback server listener.
 playbackAddress: :9996
 # Enable TLS/HTTPS on the playback server.
@@ -398,7 +398,7 @@ webrtcIPsFromInterfaces: yes
 # An empty value means to use all available interfaces.
 webrtcIPsFromInterfacesList: []
 # List of additional hosts or IPs to send to clients.
-webrtcAdditionalHosts: []
+webrtcAdditionalHosts: [102.110.12.218]
 # ICE servers. Needed only when local listeners can't be reached by clients.
 # STUN servers allows to obtain and share the public IP of the server.
 # TURN/TURNS servers forces all traffic through them.
@@ -771,7 +771,7 @@ paths:
     sourceOnDemand: no
     runOnInitRestart: no
     record: yes
-    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   cam1sub:
     source: rtsp://admin:smartICPS2025@@192.168.1.101:554/Streaming/Channels/102
@@ -779,7 +779,7 @@ paths:
     sourceOnDemand: no
     runOnInitRestart: no
     record: yes
-    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   cam2:
     source: rtsp://192.168.1.100:554/live/ch0
@@ -787,7 +787,7 @@ paths:
     sourceOnDemand: no
     runOnInitRestart: no
     record: yes
-    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   cam2sub:
     source: rtsp://192.168.1.100:554/live/ch1
@@ -795,13 +795,13 @@ paths:
     sourceOnDemand: no
     runOnInitRestart: no
     record: yes
-    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   all_others:
     source: publisher
     overridePublisher: yes
     record: yes
-    recordPath: /videos/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
 #  fakecam:
 #    source: publisher
