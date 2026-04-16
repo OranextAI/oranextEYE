@@ -177,14 +177,15 @@ ffprobe -v quiet -select_streams v:0 \
     overridePublisher: yes
     runOnInit: >
       ffmpeg -re -stream_loop -1 -i /videos/your-video_ready.mp4
-      -c:v copy -an
+      -c:v copy -bsf:v h264_mp4toannexb -an
       -f rtsp rtsp://127.0.0.1:8554/my_fakecam
     runOnInitRestart: yes
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 ```
 
-`-c:v copy` means ffmpeg reads the file and pushes the stream as-is — zero CPU on every loop.
+`-c:v copy` — zero CPU re-encoding on every loop.  
+`-bsf:v h264_mp4toannexb` — **required**: converts SPS/PPS from MP4 container format (`avcC`) to inline Annex B format. Without this, `aiortc` (used by the AI pipeline) connects but receives no decodable frames.
 
 Then apply:
 ```bash

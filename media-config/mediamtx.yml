@@ -395,8 +395,8 @@ webrtcLocalTCPAddress: ''
 # Gather IPs from interfaces and send them to clients.
 webrtcIPsFromInterfaces: yes
 # List of interfaces whose IPs will be sent to clients.
-# An empty value means to use all available interfaces.
-webrtcIPsFromInterfacesList: []
+# Exclude Docker bridge (172.17.x.x) — only use real interfaces.
+webrtcIPsFromInterfacesList: [lo, enp4s0, wlp3s0]
 # List of additional hosts or IPs to send to clients.
 webrtcAdditionalHosts: [102.110.12.218]
 # ICE servers. Needed only when local listeners can't be reached by clients.
@@ -804,38 +804,45 @@ paths:
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   fire:
-    source: publisher
-    overridePublisher: yes
+    source: rtsp://127.0.0.1:8554/fire_src
+    sourceProtocol: tcp
+    sourceOnDemand: no
     runOnInit: >
       ffmpeg -re -stream_loop -1 -i /videos/fire_ready.mp4
-      -c:v copy -an
-      -f rtsp rtsp://127.0.0.1:8554/fire
+      -c:v copy -bsf:v h264_mp4toannexb -an
+      -f rtsp rtsp://127.0.0.1:8554/fire_src
     runOnInitRestart: yes
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
-  performance:
+  fire_src:
     source: publisher
     overridePublisher: yes
+
+  performance:
+    source: rtsp://127.0.0.1:8554/performance_src
+    sourceProtocol: tcp
+    sourceOnDemand: no
     runOnInit: >
       ffmpeg -re -stream_loop -1 -i /videos/china_ready.mp4
-      -c:v copy -an
-      -f rtsp rtsp://127.0.0.1:8554/performance
+      -c:v copy -bsf:v h264_mp4toannexb -an
+      -f rtsp rtsp://127.0.0.1:8554/performance_src
     runOnInitRestart: yes
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+
+  performance_src:
+    source: publisher
+    overridePublisher: yes
 
 # -------------------------------------------------------
 # Fake Camera Template (Google Drive video, looped)
 # -------------------------------------------------------
 # To add a new fake camera:
 #   1. Download your video to ~/videos/
-#   2. Pre-process it ONCE to strip B-frames (required for WebRTC):
-#      ffmpeg -i ~/videos/your-video.mp4 \
-#        -c:v libx264 -preset veryfast -profile:v baseline -level 3.1 \
-#        -x264-params "bframes=0:ref=1" -g 30 -pix_fmt yuv420p -an \
-#        ~/videos/your-video_ready.mp4
-#   3. Use the _ready.mp4 file below with -c:v copy (zero CPU on loop)
+#   2. Pre-process it ONCE (see oranextEYE/README.md for full instructions)
+#   3. Use the _ready.mp4 file with -c:v copy -bsf:v h264_mp4toannexb
+#      The bitstream filter injects SPS/PPS inline so aiortc can decode frames
 #   4. Run: bash sync-config.sh
 # -------------------------------------------------------
 
@@ -844,7 +851,7 @@ paths:
 #    overridePublisher: yes
 #    runOnInit: >
 #      ffmpeg -re -stream_loop -1 -i /videos/your-video_ready.mp4
-#      -c:v copy -an
+#      -c:v copy -bsf:v h264_mp4toannexb -an
 #      -f rtsp rtsp://127.0.0.1:8554/fakecam
 #    runOnInitRestart: yes
 #    record: yes
