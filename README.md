@@ -127,6 +127,72 @@ Each enabled model gets its own thread and its own frame queue. The camera conne
 
 ---
 
+## Fake Cameras — Video Preparation
+
+WebRTC requires H.264 **Baseline profile** (no B-frames). Most downloaded videos use
+Main/High profile with B-frames, which causes mediamtx to reject the stream with:
+
+```
+WebRTC doesn't support H264 streams with B-frames
+```
+
+The solution: re-encode once, save a `_ready.mp4`, then stream-copy forever with zero CPU.
+
+### Step 1 — Check the video
+
+```bash
+ffprobe -v quiet -select_streams v:0 \
+  -show_entries stream=codec_name,width,height,pix_fmt \
+  -of default ~/videos/your-video.mp4
+```
+
+### Step 2 — Re-encode once (720p, Baseline, no B-frames)
+
+```bash
+ffmpeg -i ~/videos/your-video.mp4 \
+  -vf scale=1280:720 \
+  -c:v libx264 -preset veryfast \
+  -profile:v baseline -level 3.1 \
+  -x264-params "bframes=0:ref=1" \
+  -g 30 -pix_fmt yuv420p -an \
+  ~/videos/your-video_ready.mp4
+```
+
+If the video is already 720p, drop the `-vf scale=1280:720` line.
+
+### Step 3 — Verify the output
+
+```bash
+ffprobe -v quiet -select_streams v:0 \
+  -show_entries stream=codec_name,profile,width,height \
+  -of default ~/videos/your-video_ready.mp4
+# Expected: codec_name=h264, profile=Constrained Baseline, 1280x720
+```
+
+### Step 4 — Use in mediamtx.yml with `-c:v copy`
+
+```yaml
+  my_fakecam:
+    source: publisher
+    overridePublisher: yes
+    runOnInit: >
+      ffmpeg -re -stream_loop -1 -i /videos/your-video_ready.mp4
+      -c:v copy -an
+      -f rtsp rtsp://127.0.0.1:8554/my_fakecam
+    runOnInitRestart: yes
+    record: yes
+    recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+```
+
+`-c:v copy` means ffmpeg reads the file and pushes the stream as-is — zero CPU on every loop.
+
+Then apply:
+```bash
+bash media-config/sync-config.sh
+```
+
+---
+
 ## Writing a New Model
 
 ```python

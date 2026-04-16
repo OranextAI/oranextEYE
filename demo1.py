@@ -68,10 +68,9 @@ def fetch_enabled_models():
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT ca.id, ca.model_name, ca.stream_id, ca.enabled,
-                   s.streamname AS camera_stream
+                   c.stream_name AS camera_stream
             FROM camera_ai ca
-            JOIN device d ON ca.camera_id = d.id
-            JOIN stream  s ON s.iddevice  = d.id
+            JOIN cameras c ON ca.camera_id = c.id
             WHERE ca.enabled = true
               AND ca.model_name = ANY(%s)
         """, (list(MODEL_FN.keys()),))
