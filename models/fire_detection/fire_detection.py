@@ -4,6 +4,7 @@ fire_detection.py — Optimised version.
 Changes vs original:
 - Removed push_stream / FFmpeg encoding entirely.
 - Uses emit_detections() to send JSON to the Angular overlay via Socket.IO.
+- Uses emit_event() to send critical fire/smoke alerts to the event system.
 - Model loaded via model_registry (loaded once, shared across all threads).
 - Frame-skip logic preserved (run inference every FRAME_SKIP+1 frames).
 """
@@ -14,27 +15,28 @@ import torch
 import numpy as np
 from PIL import Image
 
-from oureyes.emitter import emit_detections
+from oureyes.emitter import emit_detections, emit_event
 from oureyes.model_registry import get_siglip, get_siglip_lock, DEVICE
-from oureyes.notifier import notify_server
 
 # ── Config ────────────────────────────────────────────────────────────────
 MODEL_NAME = "prithivMLmods/Fire-Detection-Siglip2"
 CONFIDENCE_THRESHOLD = 0.85
-ALERT_INTERVAL = 1
-FRAME_SKIP = 2   # GPU: run inference every 3rd frame (was 4)
+ALERT_INTERVAL = 5  # seconds between alerts for same event
+FRAME_SKIP = 2   # GPU: run inference every 3rd frame
 
 _last_alert_time = 0
 
 
-def fire_detection(frames, dest_cam: str, fps: int):
+def fire_detection(frames, dest_cam: str, fps: int, camera_id: int = None, camera_ai_id: int = None):
     """
     Consume frames, run fire/smoke classification, emit detections to Angular.
 
     Args:
         frames:   Generator yielding BGR numpy frames.
-        dest_cam: Stream ID sent to Angular (e.g. "fakecam").
+        dest_cam: Stream ID sent to Angular (e.g. "fire_detection_fire").
         fps:      Unused — kept for API compatibility.
+        camera_id: Camera ID for event logging.
+        camera_ai_id: CameraAI ID for event logging.
     """
     global _last_alert_time
 
@@ -90,7 +92,6 @@ def fire_detection(frames, dest_cam: str, fps: int):
         result = []
 
         # Full-frame border — id="border" tells Angular to draw the frame outline
-        # Use explicit "fire" keyword so Angular color logic is unambiguous
         border_label = "fire_detected" if fire_detected else "safe"
         result.append({
             "id": "border",
@@ -121,14 +122,20 @@ def fire_detection(frames, dest_cam: str, fps: int):
         detections = build_detections(predictions, fire_detected)
         emit_detections(dest_cam, detections, W, H)
 
-        # Kafka alert
+        # Event alert (replaces Kafka)
         if run_inf and fire_detected:
             for lbl, prob in predictions.items():
                 if lbl.lower() in ("fire", "smoke") and prob >= CONFIDENCE_THRESHOLD:
                     if time.time() - _last_alert_time >= ALERT_INTERVAL:
-                        notify_server("camera", {"data": "fire_detected",
-                                                  "iddevice": 19, "idattribute": 6})
-                        print(f"[fire_detection] 🔥 {lbl} {prob:.2f} — alert sent")
+                        emit_event(
+                            event_type=lbl.lower(),
+                            severity="critical",
+                            camera_id=camera_id,
+                            camera_ai_id=camera_ai_id,
+                            message=f"{lbl.capitalize()} detected with {prob*100:.0f}% confidence",
+                            metadata={"confidence": prob, "label": lbl}
+                        )
+                        print(f"[fire_detection] 🔥 {lbl} {prob:.2f} — event sent")
                         _last_alert_time = time.time()
 
     # ── Main loop ─────────────────────────────────────────────────────────
@@ -139,5 +146,5 @@ def fire_detection(frames, dest_cam: str, fps: int):
 
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
-    frames = pull_stream("cam2sub")
-    fire_detection(frames, dest_cam="cam2sub", fps=25)
+    frames = pull_stream("fire")
+    fire_detection(frames, dest_cam="fire", fps=25)

@@ -804,36 +804,26 @@ paths:
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
   fire:
-    source: rtsp://127.0.0.1:8554/fire_src
-    sourceProtocol: tcp
-    sourceOnDemand: no
+    source: publisher
+    overridePublisher: yes
     runOnInit: >
       ffmpeg -re -stream_loop -1 -i /videos/fire_ready.mp4
       -c:v copy -bsf:v h264_mp4toannexb -an
-      -f rtsp rtsp://127.0.0.1:8554/fire_src
+      -f rtsp rtsp://127.0.0.1:8554/fire
     runOnInitRestart: yes
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
-  fire_src:
+  performance:
     source: publisher
     overridePublisher: yes
-
-  performance:
-    source: rtsp://127.0.0.1:8554/performance_src
-    sourceProtocol: tcp
-    sourceOnDemand: no
     runOnInit: >
       ffmpeg -re -stream_loop -1 -i /videos/china_ready.mp4
       -c:v copy -bsf:v h264_mp4toannexb -an
-      -f rtsp rtsp://127.0.0.1:8554/performance_src
+      -f rtsp rtsp://127.0.0.1:8554/performance
     runOnInitRestart: yes
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
-
-  performance_src:
-    source: publisher
-    overridePublisher: yes
 
 # -------------------------------------------------------
 # Fake Camera Template (Google Drive video, looped)

@@ -9,20 +9,23 @@ Model loaded once via model_registry, shared across all threads.
 import cv2
 import json
 import os
+import time
 import numpy as np
 import supervision as sv
 
-from oureyes.emitter import emit_detections
+from oureyes.emitter import emit_detections, emit_event
 from oureyes.model_registry import get_yolo, get_yolo_lock
 
 # ── Config ────────────────────────────────────────────────────────────────
 CONFIDENCE_THRESHOLD = 0.1
 IMAGE_SIZE           = 1280
 FRAME_SKIP           = 2
+ALERT_INTERVAL       = 10  # seconds between zone occupancy alerts
 
 
 def zone_detection(frames, dest_cam: str, fps: int,
-                   zone_points: list = None):
+                   zone_points: list = None,
+                   camera_id: int = None, camera_ai_id: int = None):
     """
     Detect objects inside defined zones and emit to Angular overlay.
 
@@ -82,6 +85,7 @@ def zone_detection(frames, dest_cam: str, fps: int,
     model = get_yolo(MODEL_PATH)
     _infer_lock = get_yolo_lock(MODEL_PATH)
     last_detections: list = []
+    _last_alert_times: dict = {}  # zone_index -> last alert timestamp
 
     def run_inference(frame) -> list:
         if (frame.shape[1], frame.shape[0]) != (W, H):
@@ -89,36 +93,44 @@ def zone_detection(frames, dest_cam: str, fps: int,
 
         with _infer_lock:
             results = model(frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
-        sv_dets  = sv.Detections.from_ultralytics(results)
+        sv_dets = sv.Detections.from_ultralytics(results)
 
-        out = []
-
-        # Object detections inside zones only (no polygon data — zones come from DB)
-        in_zone_count = 0
+        # Count detections per zone
+        zone_counts = [0] * len(polygons_px)
         for i, (x1, y1, x2, y2) in enumerate(sv_dets.xyxy):
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            in_zone = any(
-                cv2.pointPolygonTest(poly, (cx, cy), False) >= 0
-                for poly in polygons_px
-            )
-            if not in_zone:
-                continue
-            in_zone_count += 1
-            conf  = float(sv_dets.confidence[i]) if sv_dets.confidence is not None else None
-            label = model.names[int(sv_dets.class_id[i])] if sv_dets.class_id is not None else "object"
-            out.append({
-                "label": label,
-                "conf":  round(conf, 3) if conf is not None else None,
-                "box": {
-                    "x": round(x1 / W, 4), "y": round(y1 / H, 4),
-                    "w": round((x2 - x1) / W, 4), "h": round((y2 - y1) / H, 4),
-                },
-            })
+            for zi, poly in enumerate(polygons_px):
+                if cv2.pointPolygonTest(poly, (cx, cy), False) >= 0:
+                    zone_counts[zi] += 1
 
-        if in_zone_count == 0:
+        total = len(sv_dets.xyxy)
+        in_zone = sum(zone_counts)
+        print(f"[zone_detection] {dest_cam} — {total} total detections, {in_zone} in zone")
+
+        out = []
+        # Emit zone polygons + occupancy status for Angular
+        for z_idx, zone in enumerate(zones_norm):
+            count = zone_counts[z_idx]
+            if count > 0:
+                label = f"occupied | {count} detected"
+                # Fire zone occupancy event alert
+                last_alert = _last_alert_times.get(z_idx, 0)
+                if time.time() - last_alert >= ALERT_INTERVAL:
+                    zone_label = zones_data[z_idx][0].get("label", f"Zone {z_idx+1}") if zones_data else f"Zone {z_idx+1}"
+                    emit_event(
+                        event_type="zone_occupied",
+                        severity="warning",
+                        camera_id=camera_id,
+                        camera_ai_id=camera_ai_id,
+                        message=f"{zone_label} occupied — {count} object(s) detected",
+                        metadata={"zone_index": z_idx, "detection_count": count}
+                    )
+                    _last_alert_times[z_idx] = time.time()
+            else:
+                label = zones_data[z_idx][0].get("label", f"Zone {z_idx + 1}") if zones_data else f"Zone {z_idx + 1}"
             out.append({
-                "id":    "status",
-                "label": "No objects in zones",
+                "id":    f"zone_status_{z_idx}",
+                "label": label,
                 "conf":  None,
                 "box":   {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
             })

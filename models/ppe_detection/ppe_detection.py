@@ -55,6 +55,7 @@ def ppe_detection(frames, dest_cam: str, fps: int):
                 verbose=False,
             )
         r = results[0] if isinstance(results, list) else results
+        out=[]
         for box in r.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf   = float(box.conf[0])

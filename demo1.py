@@ -115,9 +115,8 @@ def sync_frames(queue, loop, label, stop_event):
                 return
             time.sleep(0.2)
 
-def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None):
+def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None, camera_id=None, camera_ai_id=None):
     """Run model in a loop, respecting stop_event."""
-    # Models that accept zone_points
     ZONE_MODELS = {"zone_analysis", "zone_detection", "surveillance_zones", "time_count"}
     model_name = label.split("[")[0]
 
@@ -127,6 +126,10 @@ def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_po
             kwargs = {"dest_cam": dest_cam, "fps": FPS}
             if model_name in ZONE_MODELS and zone_points is not None:
                 kwargs["zone_points"] = zone_points
+            if camera_id is not None:
+                kwargs["camera_id"] = camera_id
+            if camera_ai_id is not None:
+                kwargs["camera_ai_id"] = camera_ai_id
             model_fn(sync_frames(queue, loop, label, stop_event), **kwargs)
         except Exception as e:
             if stop_event.is_set():
@@ -155,7 +158,7 @@ async def start_model(row, loop):
 
     t = threading.Thread(
         target=run_model_thread,
-        args=(model_fn, queue, loop, dest_cam, label, stop_evt, row.get("zone_points", [])),
+        args=(model_fn, queue, loop, dest_cam, label, stop_evt, row.get("zone_points", []), row.get("camera_id"), row.get("id")),
         name=label,
         daemon=True,
     )

@@ -78,7 +78,6 @@ def emit_detections(stream_id: str, detections: list,
     Called from AI model threads at inference rate.
     """
     if not _connected:
-        # Try to reconnect lazily without blocking the model thread
         client = _get_client()
         if not client or not client.connected:
             return
@@ -94,6 +93,34 @@ def emit_detections(stream_id: str, detections: list,
         _sio.emit("detection", payload, namespace="/camera")
     except Exception:
         pass  # never block the model thread
+
+
+def emit_event(event_type: str, severity: str, message: str,
+               camera_id: int = None, camera_ai_id: int = None,
+               metadata: dict = None) -> None:
+    """
+    Emit an AI event (fire, zone_occupied, etc.) to Node.js for DB storage
+    and real-time notification broadcast to Angular.
+    Non-blocking — drops silently if not connected.
+    """
+    if not _connected:
+        client = _get_client()
+        if not client or not client.connected:
+            return
+
+    payload = {
+        "event_type":   event_type,
+        "severity":     severity,
+        "camera_id":    camera_id,
+        "camera_ai_id": camera_ai_id,
+        "message":      message,
+        "metadata":     metadata or {},
+        "ts":           int(time.time() * 1000),
+    }
+    try:
+        _sio.emit("ai_event", payload, namespace="/camera")
+    except Exception:
+        pass
 
 
 def close():
