@@ -1,8 +1,7 @@
 """
-zone_detection.py — Optimised version.
+restricted_zone.py — Detects intrusions in restricted zones using YOLO.
 
-Detects objects inside defined polygon zones using YOLO.
-Emits zone polygons + bounding-box detections to Angular overlay via Socket.IO.
+Emits zone status to Angular overlay via Socket.IO.
 Model loaded once via model_registry, shared across all threads.
 """
 
@@ -20,11 +19,12 @@ from oureyes.model_registry import get_yolo, get_yolo_lock
 CONFIDENCE_THRESHOLD = 0.1
 IMAGE_SIZE           = 1280
 FRAME_SKIP           = 2
-ALERT_INTERVAL       = 10  # seconds between zone occupancy alerts
+ALERT_INTERVAL       = 10  # seconds between zone intrusion alerts
 
 
-def zone_detection(frames, dest_cam: str, fps: int,
+def restricted_zone(frames, dest_cam: str, fps: int,
                    zone_points: list = None,
+                   zone_labels: list = None,
                    camera_id: int = None, camera_ai_id: int = None):
     """
     Detect objects inside defined zones and emit to Angular overlay.
@@ -41,14 +41,14 @@ def zone_detection(frames, dest_cam: str, fps: int,
     try:
         first_frame = next(frame_iterator)
     except StopIteration:
-        print("[zone_detection] No frames available")
+        print("[restricted_zone] No frames available")
         return
 
     W, H = first_frame.shape[1], first_frame.shape[0]
-    print(f"[zone_detection] {dest_cam} — {W}x{H}")
+    print(f"[restricted_zone] {dest_cam} — {W}x{H}")
 
     if not os.path.exists(ZONES_FILE) and not zone_points:
-        print(f"[zone_detection] No zones configured for {dest_cam}")
+        print(f"[restricted_zone] No zones configured for {dest_cam}")
         def process_no_zones(frame, frame_idx):
             emit_detections(dest_cam, [{
                 "id": "status", "label": "No zones configured",
@@ -64,11 +64,19 @@ def zone_detection(frames, dest_cam: str, fps: int,
     if zone_points:
         zones_data = zone_points
     elif os.path.exists(ZONES_FILE):
-        print(f"[zone_detection] Warning: using JSON fallback — run via demo1.py for DB zones")
+        print(f"[restricted_zone] Warning: using JSON fallback — run via demo1.py for DB zones")
         with open(ZONES_FILE) as f:
             zones_data = json.load(f)
     else:
         zones_data = []
+
+    # Zone labels — from DB or auto-generated
+    if zone_labels and len(zone_labels) == len(zones_data):
+        labels_list = zone_labels
+    else:
+        labels_list = [f"Zone {i + 1}" for i in range(len(zones_data))]
+
+    print(f"[restricted_zone] {dest_cam} — {len(zones_data)} zone(s): {labels_list}")
 
     # Pixel polygons for OpenCV point-in-polygon test
     polygons_px = [
@@ -105,29 +113,31 @@ def zone_detection(frames, dest_cam: str, fps: int,
 
         total = len(sv_dets.xyxy)
         in_zone = sum(zone_counts)
-        print(f"[zone_detection] {dest_cam} — {total} total detections, {in_zone} in zone")
+        print(f"[restricted_zone] {dest_cam} — {total} total detections, {in_zone} in zone")
 
         out = []
-        # Emit zone polygons + occupancy status for Angular
-        for z_idx, zone in enumerate(zones_norm):
-            count = zone_counts[z_idx]
+        # Emit zone status for Angular — one entry per zone
+        for z_idx in range(len(polygons_px)):
+            count     = zone_counts[z_idx]
+            zone_name = labels_list[z_idx]
+
             if count > 0:
-                label = f"occupied | {count} detected"
-                # Fire zone occupancy event alert
+                label = f"intrusion | {count} detected"
+                # Zone intrusion event alert (throttled per zone)
                 last_alert = _last_alert_times.get(z_idx, 0)
                 if time.time() - last_alert >= ALERT_INTERVAL:
-                    zone_label = zones_data[z_idx][0].get("label", f"Zone {z_idx+1}") if zones_data else f"Zone {z_idx+1}"
                     emit_event(
-                        event_type="zone_occupied",
+                        event_type="zone_intrusion",
                         severity="warning",
                         camera_id=camera_id,
                         camera_ai_id=camera_ai_id,
-                        message=f"{zone_label} occupied — {count} object(s) detected",
+                        message=f"Intrusion detected in {zone_name} — {count} object(s)",
                         metadata={"zone_index": z_idx, "detection_count": count}
                     )
                     _last_alert_times[z_idx] = time.time()
             else:
-                label = zones_data[z_idx][0].get("label", f"Zone {z_idx + 1}") if zones_data else f"Zone {z_idx + 1}"
+                label = zone_name  # show zone name when clear (renders green)
+
             out.append({
                 "id":    f"zone_status_{z_idx}",
                 "label": label,
@@ -152,4 +162,4 @@ def zone_detection(frames, dest_cam: str, fps: int,
 if __name__ == "__main__":
     from oureyes.puller import pull_stream
     frames = pull_stream("cam2sub")
-    zone_detection(frames, dest_cam="cam2sub", fps=25)
+    restricted_zone(frames, dest_cam="cam2sub", fps=25)

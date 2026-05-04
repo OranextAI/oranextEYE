@@ -21,7 +21,7 @@ from oureyes.debug_timing import mark_stage
 
 from models.fire_detection.fire_detection import fire_detection
 from models.ppe_detection.ppe_detection import ppe_detection
-from models.zone_detection.zone_detection import zone_detection
+from models.restricted_zone.restricted_zone import restricted_zone
 from models.zone_analysis.zone_analysis import zone_analysis
 from models.surveillance_zones.surveillance_zones import surveillance_zones
 from models.time_count.time_count import time_count
@@ -35,7 +35,7 @@ RESTART_DELAY = 5   # seconds before restarting a crashed thread
 MODEL_FN = {
     "fire_detection":     fire_detection,
     "ppe_detection":      ppe_detection,
-    "zone_detection":     zone_detection,
+    "restricted_zone":    restricted_zone,
     "zone_analysis":      zone_analysis,
     "surveillance_zones": surveillance_zones,
     "time_count":         time_count,
@@ -68,6 +68,7 @@ def fetch_enabled_models():
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT ca.id, ca.model_name, ca.stream_id, ca.enabled,
+                   ca.camera_id,
                    c.stream_name AS camera_stream
             FROM camera_ai ca
             JOIN cameras c ON ca.camera_id = c.id
@@ -80,12 +81,14 @@ def fetch_enabled_models():
         result = []
         for row in rows:
             cur.execute("""
-                SELECT points FROM camera_zones
+                SELECT points, label FROM camera_zones
                 WHERE camera_ai_id = %s ORDER BY zone_index
             """, (row["id"],))
             zone_rows = cur.fetchall()
             row = dict(row)
-            row["zone_points"] = [z["points"] for z in zone_rows]
+            # Pass both points and labels
+            row["zone_points"]  = [z["points"] for z in zone_rows]
+            row["zone_labels"]  = [z["label"]  for z in zone_rows]
             result.append(row)
 
         cur.close()
@@ -115,9 +118,9 @@ def sync_frames(queue, loop, label, stop_event):
                 return
             time.sleep(0.2)
 
-def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None, camera_id=None, camera_ai_id=None):
+def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None, zone_labels=None, camera_id=None, camera_ai_id=None):
     """Run model in a loop, respecting stop_event."""
-    ZONE_MODELS = {"zone_analysis", "zone_detection", "surveillance_zones", "time_count"}
+    ZONE_MODELS = {"zone_analysis", "restricted_zone", "surveillance_zones", "time_count"}
     model_name = label.split("[")[0]
 
     while not stop_event.is_set():
@@ -126,6 +129,8 @@ def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_po
             kwargs = {"dest_cam": dest_cam, "fps": FPS}
             if model_name in ZONE_MODELS and zone_points is not None:
                 kwargs["zone_points"] = zone_points
+            if model_name in ZONE_MODELS and zone_labels is not None:
+                kwargs["zone_labels"] = zone_labels
             if camera_id is not None:
                 kwargs["camera_id"] = camera_id
             if camera_ai_id is not None:
@@ -158,7 +163,9 @@ async def start_model(row, loop):
 
     t = threading.Thread(
         target=run_model_thread,
-        args=(model_fn, queue, loop, dest_cam, label, stop_evt, row.get("zone_points", []), row.get("camera_id"), row.get("id")),
+        args=(model_fn, queue, loop, dest_cam, label, stop_evt,
+              row.get("zone_points", []), row.get("zone_labels", []),
+              row.get("camera_id"), row.get("id")),
         name=label,
         daemon=True,
     )
