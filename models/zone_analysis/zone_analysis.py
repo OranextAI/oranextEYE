@@ -31,16 +31,19 @@ FRAME_SKIP              = 2
 
 
 def zone_analysis(frames, dest_cam: str, fps: int,
-                  zone_points: list = None):
+                  zone_points: list = None,
+                  camera_id: int = None, camera_ai_id: int = None):
     """
     Track person presence in zones and emit detections to Angular.
 
     Args:
-        frames:      Generator yielding BGR numpy frames.
-        dest_cam:    Socket.IO streamId.
-        fps:         Used for dt calculation.
-        zone_points: List of zone polygon lists [[{x,y},...], ...] normalised 0-1.
-                     Passed in from demo1.py which reads them from the DB.
+        frames:       Generator yielding BGR numpy frames.
+        dest_cam:     Socket.IO streamId.
+        fps:          Used for dt calculation.
+        zone_points:  List of zone polygon lists [[{x,y},...], ...] normalised 0-1.
+                      Passed in from demo1.py which reads them from the DB.
+        camera_id:    Camera ID for event logging.
+        camera_ai_id: CameraAI ID for event logging.
     """
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8n.pt")
 

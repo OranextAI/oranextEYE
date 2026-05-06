@@ -18,14 +18,17 @@ CONFIDENCE_THRESHOLD = 0.3
 FRAME_SKIP         = 2   # run inference every 3rd frame on GPU
 
 
-def ppe_detection(frames, dest_cam: str, fps: int):
+def ppe_detection(frames, dest_cam: str, fps: int,
+                  camera_id: int = None, camera_ai_id: int = None):
     """
     Detect PPE and emit bounding-box detections to Angular.
 
     Args:
-        frames:   Generator yielding BGR numpy frames.
-        dest_cam: Socket.IO streamId (e.g. "ppe_detection_cam2sub").
-        fps:      Unused — kept for API compatibility.
+        frames:       Generator yielding BGR numpy frames.
+        dest_cam:     Socket.IO streamId (e.g. "ppe_detection_cam2sub").
+        fps:          Unused — kept for API compatibility.
+        camera_id:    Camera ID for event logging.
+        camera_ai_id: CameraAI ID for event logging.
     """
     MODEL_PATH = os.path.join(os.path.dirname(__file__), "best300.pt")
 

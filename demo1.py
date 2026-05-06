@@ -22,7 +22,7 @@ from oureyes.debug_timing import mark_stage
 from models.fire_detection.fire_detection import fire_detection
 from models.ppe_detection.ppe_detection import ppe_detection
 from models.restricted_zone.restricted_zone import restricted_zone
-from models.zone_analysis.zone_analysis import zone_analysis
+from models.workstation_monitoring.workstation_monitoring import workstation_monitoring
 from models.surveillance_zones.surveillance_zones import surveillance_zones
 from models.time_count.time_count import time_count
 
@@ -33,12 +33,12 @@ RESTART_DELAY = 5   # seconds before restarting a crashed thread
 
 # Map model_name → function
 MODEL_FN = {
-    "fire_detection":     fire_detection,
-    "ppe_detection":      ppe_detection,
-    "restricted_zone":    restricted_zone,
-    "zone_analysis":      zone_analysis,
-    "surveillance_zones": surveillance_zones,
-    "time_count":         time_count,
+    "fire_detection":        fire_detection,
+    "ppe_detection":         ppe_detection,
+    "restricted_zone":       restricted_zone,
+    "workstation_monitoring": workstation_monitoring,
+    "surveillance_zones":    surveillance_zones,
+    "time_count":            time_count,
 }
 
 # ── DB connection (persistent, reconnects on error) ───────────────────────
@@ -81,14 +81,16 @@ def fetch_enabled_models():
         result = []
         for row in rows:
             cur.execute("""
-                SELECT points, label FROM camera_zones
+                SELECT points, label, absence_threshold, total_absence_threshold
+                FROM camera_zones
                 WHERE camera_ai_id = %s ORDER BY zone_index
             """, (row["id"],))
             zone_rows = cur.fetchall()
             row = dict(row)
-            # Pass both points and labels
-            row["zone_points"]  = [z["points"] for z in zone_rows]
-            row["zone_labels"]  = [z["label"]  for z in zone_rows]
+            row["zone_points"]                    = [z["points"]                    for z in zone_rows]
+            row["zone_labels"]                    = [z["label"]                     for z in zone_rows]
+            row["zone_absence_thresholds"]        = [z["absence_threshold"]         for z in zone_rows]
+            row["zone_total_absence_thresholds"]  = [z["total_absence_threshold"]   for z in zone_rows]
             result.append(row)
 
         cur.close()
@@ -118,9 +120,10 @@ def sync_frames(queue, loop, label, stop_event):
                 return
             time.sleep(0.2)
 
-def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None, zone_labels=None, camera_id=None, camera_ai_id=None):
+def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_points=None, zone_labels=None, zone_absence_thresholds=None, zone_total_absence_thresholds=None, camera_id=None, camera_ai_id=None):
     """Run model in a loop, respecting stop_event."""
-    ZONE_MODELS = {"zone_analysis", "restricted_zone", "surveillance_zones", "time_count"}
+    ZONE_MODELS       = {"workstation_monitoring", "restricted_zone", "surveillance_zones", "time_count"}
+    ZONE_LABEL_MODELS = {"restricted_zone"}  # only these accept zone_labels
     model_name = label.split("[")[0]
 
     while not stop_event.is_set():
@@ -129,8 +132,12 @@ def run_model_thread(model_fn, queue, loop, dest_cam, label, stop_event, zone_po
             kwargs = {"dest_cam": dest_cam, "fps": FPS}
             if model_name in ZONE_MODELS and zone_points is not None:
                 kwargs["zone_points"] = zone_points
-            if model_name in ZONE_MODELS and zone_labels is not None:
+            if model_name in ZONE_LABEL_MODELS and zone_labels is not None:
                 kwargs["zone_labels"] = zone_labels
+            if model_name == "workstation_monitoring" and zone_absence_thresholds is not None:
+                kwargs["zone_absence_thresholds"] = zone_absence_thresholds
+            if model_name == "workstation_monitoring" and zone_total_absence_thresholds is not None:
+                kwargs["zone_total_absence_thresholds"] = zone_total_absence_thresholds
             if camera_id is not None:
                 kwargs["camera_id"] = camera_id
             if camera_ai_id is not None:
@@ -165,6 +172,8 @@ async def start_model(row, loop):
         target=run_model_thread,
         args=(model_fn, queue, loop, dest_cam, label, stop_evt,
               row.get("zone_points", []), row.get("zone_labels", []),
+              row.get("zone_absence_thresholds", []),
+              row.get("zone_total_absence_thresholds", []),
               row.get("camera_id"), row.get("id")),
         name=label,
         daemon=True,
